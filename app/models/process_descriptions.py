@@ -238,7 +238,6 @@ print("Tables read successfully.")
 
 
 
-
 df_MARA_fields=add_MARA_products_fields(df_MARA, df_T023T, df_TSPAT,df_codes)
 df_updated_products = filter_products(df_MARA_fields, df_CE1SARL)
 
