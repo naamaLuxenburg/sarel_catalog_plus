@@ -11,21 +11,33 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger()
 prod=True
 
-def load_config(config_file=os.path.join("database", "DB_config.json")):
+
+def load_config(config_file=None):
     """
     Loads the configuration file to get database credentials.
 
     Args:
-    config_file (str): Path to the configuration JSON file (default is 'config.json').
+    config_file (str or None): Path to the configuration JSON file. If None, it defaults to database/DB_config.json relative to this file.
 
     Returns:
     dict: The configuration values.
     """
+    if config_file is None:
+        try:
+            # Normal script mode
+            base_path = os.path.dirname(__file__)
+        except NameError:
+            # Interactive mode fallback
+            base_path = os.getcwd()
+
+        config_file = os.path.join(base_path, "DB_config.json")
+
     with open(config_file, 'r') as f:
         config = json.load(f)
+
     return config
 
-def get_connection_string(prod, db_label='SAP',driver='ODBC Driver 18 for SQL Server',config_file=os.path.join("database", "DB_config.json")):
+def get_connection_string(prod, db_label='SAP',driver='ODBC Driver 18 for SQL Server',config_file=None):
     """
     Generates a connection string to connect to the SQL Server database using config from a JSON file.
 
@@ -41,11 +53,9 @@ def get_connection_string(prod, db_label='SAP',driver='ODBC Driver 18 for SQL Se
     config = load_config(config_file)
 
     if not prod:
-        print("QA SAP connecting")
         server = config.get(f'DB_{db_label}_SERVER_QA', 'default_server')
         database = config.get(f'DB_{db_label}_DATABASE_QA', 'default_db')
     else:
-        print(f"PROD {db_label} connecting")
         server = config.get(f'DB_{db_label}_SERVER_PROD', 'default_server')
         database = config.get(f'DB_{db_label}_DATABASE_PROD', 'default_db')
 

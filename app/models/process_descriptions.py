@@ -1,3 +1,5 @@
+#region import libraries
+
 import datetime
 import os
 import sys
@@ -5,50 +7,45 @@ import re
 import numpy as np
 import pandas as pd
 from nltk.tokenize import word_tokenize
-from collections import Counter
-from collections import defaultdict
+from collections import Counter,defaultdict
+import random
+from transformers import AutoTokenizer, AutoModel
+import torch
+import faiss
+from sklearn.preprocessing import normalize
+import openai
+from openai import OpenAI
+import time
+import json
 
-
-# # Add the root directory to the sys.path
-# sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
-# from database.db_AI_utils import *
 
 # Add root directory to sys.path safely for both script and interactive environments
 try:
     root_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'))
+    print(f"Root path set to: {root_path}")
+
 except NameError:
     # __file__ is not defined in Interactive Window
     root_path = os.path.abspath(os.path.join(os.getcwd(), '../../'))
 
 if root_path not in sys.path:
     sys.path.append(root_path)
+    print(f"Added root path to sys.path: {root_path}")
 
 # Now safely import
+# from database.db_AI_utils import load_dataframe_to_table, inserted_column, replace_empty_with_null_safe,get_table_AI
 from database.db_AI_utils import *
+from app.constants import *
+print(f"✅ constants.py imported successfully {final_desc}")
 
+#endregion
 
-#enviroment variables
-product_id_CE1SARL='ARTNR'
+#region enviroment variables
+#new_openAI_key='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'
 
-product_id_MARA='MATNR'
-product_desc='full_desc'
-product_desc_update='full_desc_update'
-rules_desc='rules_desc'
-product_code_sub_field='MATKL'
-product_desc_sub_field='WGBEZ'
-product_dv_id='SPART'
-product_dv_desc='VTEXT'
-product_category='MTPOS_MARA'
-product_basic_unit='MEINS'
-product_order_unit='BSTME'
-product_order_basic_unit='BSTME_merge_MEINS'
-manufacturer_model='MFRPN'
-supplier_name='NAME1'
+#endregion
 
-unit_code='Code1'
-unit_desc='MSEHL_x'
-unit_code_number='Code_number'
-ls_dvs=['11','12','22','25']
+#region functions
 
 def filter_products(df_MARA, df_CE1SARL):
 
@@ -57,6 +54,7 @@ def filter_products(df_MARA, df_CE1SARL):
     - from specified divisions.
     - from specific years
     - where the product ID starts with a digit.
+    - without hebrew characters in the description.
 
     :param df: DataFrame containing product data.
     :return: Filtered DataFrame containing only products from the specified divisions.
@@ -247,32 +245,17 @@ def tokenize_text(text):
     # # Keep tokens that are at least one letter or number (skip pure punctuation)
     return [token.lower() for token in tokens if re.search(r'[a-zA-Z0-9]', token)]
 
-#region Step init
-current_year=datetime.datetime.now().year
-years=np.arange(2023,current_year+1)
+def clean_space_and_special_chars(text):
+    """
+    Helper function to clean special characters from the end of a match.
+    """
+    #after all rules applied, remove any leading or trailing special characters and whitespace
+    # Normalize spaces
+    text = re.sub(r'\s+', ' ', text).strip()
 
-print("Reading tables from DBAI...")
-df_CE1SARL = get_table_AI('CE1SARL_Invoice_all', [], years)
-df_MARA =get_table_AI('MARA_Products')
-df_T023T=get_table_AI('T023T_MATKL_description')
-df_TSPAT=get_table_AI('TSPAT_dv_description')
-df_codes =get_table_AI('T006A_ZTMM035_ZTSD044_Code_units')
-print("Tables read successfully.")
-
-
-
-df_MARA_fields=add_MARA_products_fields(df_MARA, df_T023T, df_TSPAT,df_codes)
-df_updated_products = filter_products(df_MARA_fields, df_CE1SARL)
-
-
-# random_sample = df_updated_products[[product_id_MARA,product_desc, product_desc_update,manufacturer_model,unit_code_number]].sample(n=100, random_state=42)
-# random_sample.to_excel('temp_excel/random_sample.xlsx', index=False)
-
-#endregion
-
-#region step 1 - Preprocessing descriptions based on roles.
-
-
+    # Remove trailing special characters and whitespace
+    text = re.sub(r'[\s\-.,/\\]+$', '', text)
+    return text.strip()
 
 def preprocess_description(text, rules=None):
     """
@@ -297,17 +280,17 @@ def preprocess_description(text, rules=None):
     
     # Rule 1: Replace commas and slashes, - ,* with space
     if "replace_punct" in rules:
-        text = re.sub(r'[,/\\\-\*\#\%\(\)\+]', ' ', text)
+        text = re.sub(r'[,/\\\-\*\#\%\(\)\+\=]', ' ', text)
 
     # Rule 2: Smart dot split (preserve abbreviations like "W.O", break others like "w.cath")
     if "smart_dot_split" in rules:
         def dot_replacer(match):
             part = match.group()
             parts = part.split('.')
-            if all(len(p) <= 2 for p in parts) and len(parts) == 2:
-                return part  # It's an abbreviation like W.O
+            if all(p.isalpha() and len(p) <= 2 for p in parts):
+                return part  # Keep as abbreviation (e.g., F.A.M.A, W.O)
             else:
-                return ' '.join(parts)
+                return ' '.join(parts)  # Break apart (e.g., lens.intra → lens intra)
 
         # Match any sequence with one or more dot-separated words/numbers
         text = re.sub(r'\b(?:\w+\.)+\w+\b', dot_replacer, text)
@@ -316,117 +299,12 @@ def preprocess_description(text, rules=None):
     if "remove_digits" in rules:
         # Match digits that are NOT surrounded by letters on both sides
         # Remove floats or integers not between letters
-        text = re.sub(r'(?<![A-Za-z])\d+(?:\.\d+)?(?![A-Za-z])', '', text)
-
+        #text = re.sub(r'(?<![A-Za-z])\d+(?:\.\d+)?(?![A-Za-z])', '', text)
+        text = re.sub(r'\d+', '', text)
     
-    #after all rules applied, remove any leading or trailing special characters and whitespace
-    # Normalize spaces
-    text = re.sub(r'\s+', ' ', text).strip()
-
-    # Remove trailing special characters and whitespace
-    text = re.sub(r'[\s\-.,/\\]+$', '', text)
-
-    return text
-
-
-df_filter=df_updated_products[[product_id_MARA,product_desc, product_desc_update]]
-#step 0: preprocess the description
-df_filter.insert(df_filter.columns.get_loc(product_desc_update) + 1, rules_desc, df_filter[product_desc_update].apply(preprocess_description))
-
-# Step 1: create tokens from the description
-df_filter.insert(df_filter.columns.get_loc(rules_desc) + 1, 'tokens', df_filter[rules_desc].apply(tokenize_text))
-
-#Step 2: create a vocabulary of tokens with their frequencies
-vocab_counter = Counter(token for tokens in df_filter["tokens"] for token in tokens)
-
-df_vocab = pd.DataFrame([
-    {
-        "token": token,
-        "frequency": freq,    }
-    for token, freq in vocab_counter.items()
-])
-df_vocab = df_vocab.sort_values(by="frequency", ascending=False).reset_index(drop=True)
-print(f"Vocabulary created with {len(df_vocab)} unique tokens.")
-
-#step 3: create filter vocabulary
-# Define a list of stopwords to remove (you can expand this list)
-custom_stopwords = {'for', 'in', 'with', 'and', 'or', 'on', 'of', 'the', 'a', 'an'}
-def is_number(token):
-    return bool(re.fullmatch(r'-?\d+(\.\d+)?', token))
-
-# Filter out according to frequency, numeric tokens and stopwords
-df_vocab_filter = df_vocab[
-    (df_vocab["frequency"] >= 2) &  # keep tokens with frequency >= 2
-    (~df_vocab['token'].apply(is_number)) &  # remove tokens that are only digits
-    (~df_vocab['token'].isin(custom_stopwords))  # remove unwanted common words
-].reset_index(drop=True)
-print(f"Vocabulary filter created with {len(df_vocab_filter)} unique tokens.")
-
-
-df_vocab_shourtcuts = df_vocab_filter[(df_vocab_filter['token'].str.contains('\.')) &
-                                      (~df_vocab_filter['token'].str.contains(r'\d'))].reset_index(drop=True)
-print(f"Vocabulary shourtcuts created with {len(df_vocab_shourtcuts)} unique tokens.")
-
-
-#step 5: create a dictonary with elboreated tokens and all the shourtcuts
-
-# Step 6: apply the dictionary on the dscription column
-
-
-
-#endregion
-
-
-
-
-
-
-#region step 1 - tokenization and vocabulary creation
-
-
-
-# df_updated_products.drop(columns=['tokens'], inplace=True, errors='ignore')  # Remove existing 'lemmatized' column if it exists
-
-# filter out to many values ...
-# df_filter.insert(df_filter.columns.get_loc(product_desc_update) + 2, 'tokens_filter', df_filter.apply(
-#     lambda row: [
-#         token for token in row['tokens'] 
-#         if token.lower() not in (row[manufacturer_model] or "").lower()
-#     ],
-#     axis=1
-# ))
-# df_check=df_filter[df_filter['tokens_filter']!= df_filter['tokens']].reset_index(drop=True)
-
-
-
-# Step 1: Create defaultdict to collect product IDs for each token, token is the key and the value id product id
-token_to_ids = defaultdict(set)
-for _, row in df_filter.iterrows():
-    pid = row[product_id_MARA]
-    for token in row["tokens"]:
-        token_to_ids[token].add(pid)
-
-
-
-
-#endregion
-
-#region Phase B: Semantic Mapping & Abbreviation Expansion
-from transformers import AutoTokenizer, AutoModel
-import torch
-import faiss
-from sklearn.preprocessing import normalize
-
-MODEL = "emilyalsentzer/Bio_ClinicalBERT"  # or "medicalai/ClinicalBERT"
-MODEL = "medicalai/ClinicalBERT"  # or "medicalai/ClinicalBERT"
-tokenizer = AutoTokenizer.from_pretrained(MODEL)
-model = AutoModel.from_pretrained(MODEL)
-model.eval()
-
-# Move to GPU if available
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = model.to(device)
-tokens = df_vocab_filter['token'].tolist()
+    # Apply the cleaning function to the entire text
+    text_final = clean_space_and_special_chars(text)
+    return text_final
 
 def embed_tokens(tokens_list, model, tokenizer, device):
     """    
@@ -471,19 +349,6 @@ def embed_tokens(tokens_list, model, tokenizer, device):
     mean_pooled = summed / counts     # Final vector: mean over non-pad tokens
     return mean_pooled.cpu().numpy()  # Shape: (batch_size, 768)
 
-
-batch_size = 64
-vectors = []
-
-for i in range(0, len(tokens), batch_size):
-    batch = tokens[i:i+batch_size]
-    vecs = embed_tokens(batch, model, tokenizer, device)
-    vectors.append(vecs)
-
-all_vectors = np.vstack(vectors)  # <- Combine all batches
-df_vocab_filter["vector"] = list(all_vectors)
-
-
 def get_faiss_neighbors(vectors, tokens, top_k=None, threshold=None):
     """
     Find similar tokens using FAISS with either top-k or similarity threshold filtering.
@@ -523,39 +388,486 @@ def get_faiss_neighbors(vectors, tokens, top_k=None, threshold=None):
 
     return neighbors_list
 
+def is_number(token):
+    # Check if a token is a number (integer or float)
+    return bool(re.fullmatch(r'-?\d+(\.\d+)?', token))
 
 
-#Mode 1: Top-k (e.g., top 5 neighbors)
-vectors_norm = normalize(all_vectors, axis=1)
-top_neighbors = get_faiss_neighbors(vectors_norm, df_vocab_filter['token'].tolist(), top_k=5)
-df_vocab_filter['top_neighbors'] = top_neighbors
+# def replace_shortcuts(text, shortcut_dict):
+#     """
+#     Replace known shortcuts in a text with their full word equivalents,
+#     and return both the updated text and a list of shortcuts that were replaced.
 
-#🔹 Mode 2: Threshold-based (e.g., similarity ≥ 0.85)
-top_neighbors = get_faiss_neighbors(vectors_norm, df_vocab_filter['token'].tolist(), threshold=0.9)
-df_vocab_filter['th_neighbors'] = top_neighbors
+#     Skips replacement if the shortcut appears inside known abbreviations
+#     or adjacent to ':' or '/' characters.
+
+#     Parameters:
+#         text (str): Input description.
+#         shortcut_dict (dict): Shortcut → full word.
+
+#     Returns:
+#         Tuple[str, List[str]]: (updated text, list of shortcuts that were replaced)
+#     """
+
+#     if not isinstance(text, str):
+#         return text  # Skip non-string values
+#     # Convert text to lowercase for consistent matching
+#     text = text.lower()
+#     used_shortcuts = []
 
 
+#     # # Step 1: Detect protected abbreviations like "F.A.M.E"
+#     # abbreviation_pattern = re.compile(r'\b(?:[A-Za-z]{1,2}\.){1,}[A-Za-z]{1,2}\b')
+
+#     # protected_spans = [
+#     #     (match.start(), match.end(), match.group())  # <-- add matched abbreviation string
+#     #     for match in abbreviation_pattern.finditer(text)
+#     # ]
+  
+#     # ------------------------------------------------------------------------------
+#     # STEP 2: Replace shortcuts using word-boundary regex, unless protected
+#     # ------------------------------------------------------------------------------
+#     for shortcut, full_word in shortcut_dict.items():
+#         # Match the shortcut only if it's a whole word (e.g., "w." not in "f.cath")
+#         if "." in shortcut:
+#             pattern = re.compile(r'(?<!\w){}(?!\w)'.format(re.escape(shortcut)), flags=re.IGNORECASE)
+#         else:
+#             pattern = re.compile(r'\b{}\b'.format(re.escape(shortcut)), flags=re.IGNORECASE)
+#         found = False  # Will flip to True if any replacement occurs
+        
+#         def safe_replace(match):
+#             nonlocal found
+#             start = match.start()
+#             end = match.end()
+#             match_text = match.group()
+
+#             # # only skip if the match is part of a longer abbreviation,
+#             # # NOT if the entire abbreviation is the shortcut itself (like 'i.v')
+#             # for s, e, abbr in protected_spans:
+#             #     if s <= start < e and abbr.lower() != shortcut.lower():
+#             #         return match.group()  # skip replacement
+
+#             # Skip if adjacent to colon or weird symbol like O:h or w/o
+#             before = text[start - 1] if start > 0 else ''
+#             after = text[end] if end < len(text) else ''
+#             if before in ":/" or after in ":/":
+#                 return match.group()
+            
+#             found = True
+#             return " " + full_word + " "  # ✅ Add space before and after
 
 
-def compute_neighbors(df, model_name, model_label, top_k=5, threshold=0.9, batch_size=64):
+#         text = pattern.sub(safe_replace, text)
+#         if found:
+#             used_shortcuts.append(shortcut)
+
+#         text_final = clean_space_and_special_chars(text)
+
+#     return text_final,used_shortcuts
+
+def replace_shortcuts_token_based(text, shortcut_dict,blocked_shortcuts=None):
     """
-    Embed tokens and compute FAISS neighbors for a given model.
+    Replace only full-word shortcuts using smart token-based scanning.
+    Prefer longer shortcuts over shorter ones (e.g., 'w.o' > 'w.' > 'w').
 
-    Args:
-        df (pd.DataFrame): DataFrame with a 'token' column
-        model_name (str): Hugging Face model name
-        model_label (str): Label to differentiate model outputs in column names
-        top_k (int): Number of top neighbors
-        threshold (float): Similarity threshold
-        batch_size (int): Embedding batch size
+    Returns:
+        Tuple[str, List[str]]: (updated text, list of used shortcuts)
     """
-    # Load tokenizer and model
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModel.from_pretrained(model_name).to(device)
+    if not isinstance(text, str):
+        return text, []
+
+    text_lower = text.lower()
+    used_shortcuts = []
+    blocked_shortcuts = blocked_shortcuts or {}
+
+
+    # Sort shortcuts by length descending, so longer ones are matched first
+    sorted_shortcuts = sorted(shortcut_dict.items(), key=lambda x: -len(x[0]))
+
+    # Split text into tokens keeping punctuation (so "w.blood" => ["w", ".", "blood"])
+    tokens = re.findall(r'\w+|[^\w\s]', text_lower)
+
+    i = 0
+    output_tokens = []
+    while i < len(tokens):
+        matched = False
+
+        for shortcut, full_word in sorted_shortcuts:
+            shortcut_tokens = re.findall(r'\w+|[^\w\s]', shortcut.lower())
+            length = len(shortcut_tokens)
+
+            # Check for block: if this sequence is in blocked_shortcuts, skip it
+            if blocked_shortcuts is not None:
+                candidate_tokens = tokens[i:i+length]
+                candidate = ''.join(candidate_tokens)
+                # Only block if exact match and not handled by replacement dict
+                if candidate in blocked_shortcuts and candidate not in shortcut_dict:
+                    matched = True
+                    i += length
+                    output_tokens.extend(candidate_tokens)
+                    break
+
+            # Replace if exact match found in shortcut_dict
+            if tokens[i:i+length] == shortcut_tokens:
+                output_tokens.append(full_word)
+                used_shortcuts.append(shortcut)
+                i += length
+                matched = True
+                break
+
+        if not matched:
+            output_tokens.append(tokens[i])
+            i += 1
+
+    # Join the tokens with proper spacing
+    result = ""
+    for j, tok in enumerate(output_tokens):
+        if j > 0 and re.match(r'\w', tok) and re.match(r'\w', output_tokens[j-1]):
+            result += " "
+        result += tok
+
+    return result, list(set(used_shortcuts))
+
+def build_user_message(batch):
+    """
+    Build the user message for OpenAI API from a batch of shortcuts and their example descriptions.
+    Each shortcut will be presented with its examples for analysis.
+    The message will be formatted to guide the model in interpreting the shortcuts.
+    :param batch: DataFrame containing shortcuts and their example descriptions.
+    :return: JSON Formatted message string for OpenAI API.
+    """
+    message = """
+You are given a list of shortcuts with example descriptions. For each shortcut:
+1. Interpret its most likely full word.
+2. Indicate which example descriptions support your interpretation (by their number).
+3. Give a confidence score from 0 to 1.
+4. If other meanings are also valid for different descriptions, list each of them with:
+* The alternative meaning (e.g., 'dispense', 'display')
+* The matching description indices
+* A separate confidence score
+5. Ensure that all the example descriptions are covered by either the main meaning or an alternative.
+6. add a short reasoning field explaining your interpretation and logic.
+
+Use this JSON format for each:
+{
+  "input_shortcut": "disp",
+  "gpt_meaning": "disposable",
+  "gpt_desc_match": [0, 1, 2],
+  "gpt_accuracy": 0.97,
+  "gpt_meaning_alternatives": [
+    {
+      "meaning": "display",
+      "desc_match": [3],
+      "accuracy": 0.65
+    },
+    {
+      "meaning": "dispense",
+      "desc_match": [4, 5],
+      "accuracy": 0.6
+    }
+  ],
+  "reasoning": "Descriptions 0–2 refer to gloves and syringes, which are typically 'disposable'. Index 3 mentions screen-related terms, suggesting 'display'. Index 4 and 5 mention drug delivery systems, suggesting 'dispense' as another possible meaning."
+}
+
+
+Only include *_other fields if truly relevant.
+
+Examples:
+"""
+    for _, row in batch.iterrows():
+        shortcut = row['token']
+        examples = row['examples']
+        message += f"\nShortcut: \"{shortcut}\"\n"
+        for i, desc in enumerate(examples):
+            message += f"{i}. {desc}\n"
+    return message
+
+
+def call_openai(system_message, user_message, max_token=2000, retries=3, delay=5):
+    """
+    Call OpenAI API with retries and delay.
+    :param system_message: The system prompt to guide the model. 
+    :param user_message: The user message containing the shortcuts and examples.
+    :param max_token: Maximum tokens for the response.
+    :param retries: Number of retries in case of failure.
+    :param delay: Delay in seconds between retries.
+    :return: The response from OpenAI API or None if all retries fail.
+    """
+    for attempt in range(retries):
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4",
+                messages=[
+                    {"role": "system", "content": system_message},
+                    {"role": "user", "content": user_message}
+                ],
+                temperature=0,
+                max_tokens=max_token
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"Attempt {attempt + 1} failed: {e}")
+            time.sleep(delay)
+    return None
+
+def flatten_alternatives(row, max_alternatives=5):
+    """
+    Flatten the 'gpt_meaning_alternatives' field into separate columns.
+    Each alternative will have its own set of columns for meaning, desc_match, and accuracy.
+    :param row: A row from the DataFrame containing 'gpt_meaning_alternatives'.
+    :param max_alternatives: Maximum number of alternatives to flatten (default is 5).
+    :return: A Series with flattened alternative fields."""
+    alt_data = {}
+    alternatives = row.get("gpt_meaning_alternatives", [])
+    if not isinstance(alternatives, list):
+        return pd.Series(alt_data)  # Return empty if it's not a list
+    
+    for i, alt in enumerate(alternatives[:max_alternatives], 1):
+        alt_data[f"gpt_meaning_other_{i}"] = alt.get("meaning")
+        alt_data[f"gpt_desc_match_other_{i}"] = alt.get("desc_match")
+        alt_data[f"gpt_accuracy_other_{i}"] = alt.get("accuracy")
+        
+    return pd.Series(alt_data)
+
+def create_df_from_prompt_results(results):
+    """
+    Create a DataFrame from the results of OpenAI API calls.
+    Each result should be a JSON string representing a list of dictionaries.
+    If a result is not a valid JSON, it will be skipped and an error message will be printed.
+    :param results: List of JSON strings returned by OpenAI API.
+    :return: DataFrame containing the parsed results.
+    """
+    parsed_rows = []
+    for res_text in results:
+        try:
+            # Some responses may contain multiple JSON objects → wrap in []
+            if not res_text.strip().startswith('['):
+                res_text = "[" + res_text + "]"
+
+            parsed = json.loads(res_text)
+            # Handle both single and multiple JSON blocks
+            if isinstance(parsed, dict):
+                parsed_rows.append(parsed)
+            elif isinstance(parsed, list):
+                parsed_rows.extend(parsed)
+        except json.JSONDecodeError as e:
+            print("Failed to parse:", res_text)
+            print("Error:", e)
+
+    return pd.DataFrame(parsed_rows)
+
+def count_len_indices(indices):
+    """
+    Count the number of valid integer indices in the input.
+
+    Parameters:
+    -----------
+    indices : str | list | pandas.Series (from prompt results)
+        Index input, which can be a comma-separated string, list, or Series.
+
+    Returns:
+    --------
+    int
+        Number of valid integer indices.
+    """
+    if isinstance(indices, str):
+        return len([i for i in indices.split(',') if i.strip().isdigit()])
+    elif isinstance(indices, pd.Series):
+        indices = indices.tolist()
+    if isinstance(indices, list):
+        return len([i for i in indices if isinstance(i, int)])
+    return 0
+
+
+def extract_match_descriptions(desc_list, indices):
+    """
+    Extract descriptions from a list using provided indices.
+
+    Parameters:
+    ----------
+    desc_list : list of str
+        A list of example descriptions (e.g., from the 'examples' column).
+        
+    indices : str | list | pandas.Series
+        Indices that indicate which descriptions to extract. Can be:
+        - A comma-separated string (e.g., '0,2,4')
+        - A list of integers (e.g., [0, 2, 4])
+        - A Series containing a list (e.g., pd.Series([0, 2, 4]))
+
+    Returns:
+    -------
+    list of str
+        A list of descriptions selected by index. Invalid entries are skipped.
+
+    """
+    if not isinstance(desc_list, list):
+        return []
+
+    # Convert comma-separated string to list of ints
+    if isinstance(indices, str):
+        try:
+            indices = [int(i) for i in indices.split(',') if i.strip().isdigit()]
+        except Exception:
+            return []
+
+    # Convert pandas Series to list
+    if isinstance(indices, pd.Series):
+        indices = indices.tolist()
+
+    # Ensure we have a list of integers
+    if not isinstance(indices, list):
+        return []
+
+    try:
+        return [desc_list[i] for i in indices if isinstance(i, int) and 0 <= i < len(desc_list)]
+    except Exception:
+        return []
+
+def create_normalized_df(df_prompt_merge, i_max):
+    """
+    Normalize the DataFrame by expanding each row into multiple rows based on the meanings and alternatives.
+    Each row will contain the main meaning and any alternative meanings, along with their associated data.
+    :param df_prompt_merge: DataFrame containing the prompt results with meanings and alternatives.
+    :param i_max: Maximum number of alternative meanings columns to consider.
+    :return: Normalized DataFrame with each meaning and alternative in a separate row.
+    """
+    # Initialize an empty list to hold the normalized rows
+    normalized_rows = []
+
+    # Loop through each row in your existing df
+    for _, row in df_prompt_merge.iterrows():
+        base = {
+            "input_shortcut": row.get("input_shortcut"),
+        }
+
+        # Main meaning
+        normalized_rows.append({
+            **base,
+            "meaning": row.get("gpt_meaning"),
+            "desc_match": row.get("gpt_desc_match"),
+            "matched_desc": row.get("matched_desc"),
+            "desc_num": row.get("desc_num"),
+            "accuracy": row.get("gpt_accuracy"),
+            "from": "orginal",
+        })
+
+        # All alternatives (if any)
+        for i in range(1, i_max+1):  # you can adjust max as needed
+            if f"gpt_meaning_other_{i}" in row and pd.notna(row[f"gpt_meaning_other_{i}"]):
+                normalized_rows.append({
+                    **base,
+                    "meaning": row.get(f"gpt_meaning_other_{i}"),
+                    "desc_match": row.get(f"gpt_desc_match_other_{i}"),
+                    "matched_desc": row.get(f"matched_desc_other_{i}"),
+                    "desc_num": row.get(f"desc_num_other_{i}"),
+                    "accuracy": row.get(f"gpt_accuracy_other_{i}"),
+                    "from": f"other_{i}",
+                })
+
+    # Final tidy DataFrame
+    df_normalized_meanings = pd.DataFrame(normalized_rows)
+    return df_normalized_meanings.sort_values(by=["input_shortcut"], inplace=True,ignore_index=True)
+
+#endregion
+
+if __name__ == "__main__":
+
+    #region Step init
+    current_year=datetime.datetime.now().year
+    years=np.arange(2023,current_year+1)
+
+    print("Reading tables from DBAI...")
+    df_CE1SARL = get_table_AI('CE1SARL_Invoice_all', [], years)
+    df_MARA =get_table_AI('MARA_Products')
+    df_T023T=get_table_AI('T023T_MATKL_description')
+    df_TSPAT=get_table_AI('TSPAT_dv_description')
+    df_codes =get_table_AI('T006A_ZTMM035_ZTSD044_Code_units')
+    df_family=get_table_AI('ZSD_MTL_FAMREL_V_Family')
+
+    print("Tables read successfully.")
+
+
+
+    df_MARA_fields=add_MARA_products_fields(df_MARA, df_T023T, df_TSPAT,df_codes)
+    df_updated_products = filter_products(df_MARA_fields, df_CE1SARL)
+
+
+    # random_sample = df_updated_products[[product_id_MARA,product_desc, product_desc_update,manufacturer_model,unit_code_number]].sample(n=100, random_state=42)
+    # random_sample.to_excel('temp_excel/random_sample.xlsx', index=False)
+
+    #endregion
+
+
+    #region step1+step2: Preprocess descriptions and create vocabulary
+    #step 1 - Preprocessing descriptions based on roles and create tokens
+    df_filter=df_updated_products[[product_id_MARA,product_desc, product_desc_update,manufacturer_model,unit_code_number]]
+    df_filter.insert(df_filter.columns.get_loc(product_desc_update) + 1, rules_desc, df_filter[product_desc_update].apply(preprocess_description))
+    df_filter.insert(df_filter.columns.get_loc(rules_desc) + 1, 'tokens', df_filter[rules_desc].apply(tokenize_text))
+
+    #Step 2: create a vocabulary of tokens with their frequencies
+    # Step 2.1: Build vocab counter
+    vocab_counter = Counter(token for tokens in df_filter["tokens"] for token in tokens)
+    # Step 2.2: Build token → descriptions mapping once (very fast)
+    token_to_desc = defaultdict(list)
+
+    for tokens, desc in zip(df_filter["tokens"], df_filter[product_desc_update]):
+        if not isinstance(tokens, list):
+            continue
+        for token in tokens:
+            if pd.notna(desc):
+                token_to_desc[token].append(desc)
+
+    # Step 2.3: Create the vocab DataFrame
+    vocab_records = []
+    for token, freq in vocab_counter.items():
+        all_descs = token_to_desc[token]
+        examples = random.sample(all_descs, min(10, len(all_descs))) if all_descs else []
+        vocab_records.append({
+            "token": token,
+            "frequency": freq,
+            "examples": examples
+        })
+
+    df_vocab = pd.DataFrame(vocab_records).sort_values(by="frequency", ascending=False).reset_index(drop=True)
+    df_vocab['examples_num']= df_vocab['examples'].apply(lambda x: len(x)) #add the number of examples for each token
+    print(f"Vocabulary created with {len(df_vocab)} unique tokens.")
+
+    #step 2.4: create filter vocabulary
+    # Define a list of stopwords to remove (you can expand this list)
+    # custom_stopwords = {'for', 'in', 'with', 'and', 'or', 'on', 'of', 'the', 'a', 'an'}
+    custom_stopwords = {'and', 'or', 'on', 'of', 'the', 'a', 'an'}
+
+    # Filter out according to frequency, numeric tokens and stopwords
+    df_vocab_filter = df_vocab[
+        (df_vocab["frequency"] >= 2) &  # keep tokens with frequency >= 2
+        (~df_vocab['token'].apply(is_number)) &  # remove tokens that are only digits
+        (~df_vocab['token'].isin(custom_stopwords))  # remove unwanted common words
+    ].reset_index(drop=True)
+    print(f"Vocabulary filter created with {len(df_vocab_filter)} unique tokens.")
+
+
+    df_vocab_shourtcuts = df_vocab_filter[(df_vocab_filter['token'].str.contains('\.')) &
+                                        (~df_vocab_filter['token'].str.contains(r'\d'))].reset_index(drop=True)
+    print(f"Vocabulary shourtcuts created with {len(df_vocab_shourtcuts)} unique tokens.")
+    print(f'All the shourtcuts are: {df_vocab_shourtcuts["token"].tolist()}')
+
+
+
+    #endregion
+
+    #region step 3: embeding tokens,Semantic Mapping & Abbreviation Expansion
+    # MODEL = "emilyalsentzer/Bio_ClinicalBERT"  # or "medicalai/ClinicalBERT"
+    MODEL = "medicalai/ClinicalBERT"  # or "medicalai/ClinicalBERT"
+    tokenizer = AutoTokenizer.from_pretrained(MODEL)
+    model = AutoModel.from_pretrained(MODEL)
     model.eval()
 
-    # Embed in batches
-    tokens = df['token'].tolist()
+    # Move to GPU if available
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
+    tokens = df_vocab['token'].tolist()
+
+    batch_size = 64
     vectors = []
 
     for i in range(0, len(tokens), batch_size):
@@ -563,139 +875,234 @@ def compute_neighbors(df, model_name, model_label, top_k=5, threshold=0.9, batch
         vecs = embed_tokens(batch, model, tokenizer, device)
         vectors.append(vecs)
 
-    all_vectors = np.vstack(vectors)
+    all_vectors = np.vstack(vectors)  # <- Combine all batches
+    df_vocab["vector"] = list(all_vectors) #vector for each token for similarity search
+
+    #find similar token to the shourtcuts
+    #Top-k (e.g., top 5 neighbors)
     vectors_norm = normalize(all_vectors, axis=1)
+    top_neighbors = get_faiss_neighbors(vectors_norm, df_vocab['token'].tolist(), top_k=5)
+    df_vocab['top_neighbors'] = top_neighbors
 
-    # Compute neighbors
-    top_neighbors = get_faiss_neighbors(vectors_norm, tokens, top_k=top_k)
-    th_neighbors = get_faiss_neighbors(vectors_norm, tokens, threshold=threshold)
+    #Threshold-based 
+    top_neighbors = get_faiss_neighbors(vectors_norm, df_vocab['token'].tolist(), threshold=0.93)
+    df_vocab['th_neighbors'] = top_neighbors
 
-    # Add new columns to the DataFrame
-    df[f'top_neighbors_{model_label}'] = top_neighbors
-    df[f'th_neighbors_{model_label}'] = th_neighbors
-
-    return df
+    #endregion
 
 
-MODEL1 = "emilyalsentzer/Bio_ClinicalBERT"  # or "medicalai/ClinicalBERT"
-MODEL2 = "medicalai/ClinicalBERT"  # or "medicalai/ClinicalBERT"
-df_vocab_filter_model1=compute_neighbors(df_vocab_filter.copy(), MODEL1, 'bio', top_k=5, threshold=0.9)
-df_vocab_filter_model1_2=compute_neighbors(df_vocab_filter_model1.copy(), MODEL2, 'med', top_k=5, threshold=0.88)
+    #region step 4: create dictonary with elboreated tokens and all the shourtcuts
+
+    # df_manual_vocab = pd.DataFrame({
+    #         "final_word": ['with','without','out', 'needle', 'catheter','disposable','for', 'scissor', 'glove'],
+    #         "shourtcuts": [ ['w.','w'],  ['w.o'] ,['o','o.'],['ndl'],['cath'] ,['disp'], ['f.','f'], ['scs'], ['glv'] ]
+    #         })
+
+    #step 4.1 - manual vocabulary
+    df_vocab_file=pd.read_excel('temp_result/medical_shortcuts.xlsx')
 
 
+    #step 4.2: create a dictionary with elboreated tokens and all the shourtcuts using prompt engineering
+    #region prompting for find meaning to the shortcuts
+    client = OpenAI(api_key=new_openAI_key)  # Replace with your ke
 
-#endregion
-
-#region step1+2 combine
-
-#🔁 Step 1: Embed full descriptions
-def embed_texts(texts, model, tokenizer, device, max_length=64):
+    # System prompt for chain-of-thought guidance
+    system_message = """
+    You are a professional medical equipment analyst.
+    You specialize in interpreting abbreviations found in medical equipment and pharmaceutical descriptions.
+    Always return your analysis as valid JSON. Include your best guess, supporting indices, and confidence level.
     """
-    Embed a list of full text descriptions using a BERT model.
-    """
-    model.eval()
-    encoded = tokenizer(
-        texts,
-        padding=True,
-        truncation=True,
-        max_length=max_length,
-        return_tensors="pt"
-    ).to(device)
-
-    with torch.no_grad():
-        outputs = model(**encoded)
-    
-    embeddings = outputs.last_hidden_state
-    attention_mask = encoded["attention_mask"].unsqueeze(-1)
-    summed = torch.sum(embeddings * attention_mask, dim=1)
-    counts = torch.clamp(attention_mask.sum(dim=1), min=1e-9)
-    mean_pooled = summed / counts
-    return mean_pooled.cpu().numpy()
 
 
-#🧰 Step 3: Full pipeline for model + description clustering
-def compute_description_neighbors(df, text_col, model_name, model_label, top_k=5, threshold=0.9):
-    """
-    Compute semantic neighbors for product descriptions using a specified transformer model.
-    This function encodes a text column using a transformer-based language model, then uses FAISS to find:
-    - The top-K most similar descriptions
-    - All descriptions above a similarity threshold
+    # Run in batches
+    batch_size = 10
+    # result_20=results
+    results = []
 
-    These results are saved to two new columns:
-    - 'top_desc_<model_label>': list of top-K closest descriptions
-    - 'th_desc_<model_label>': list of descriptions with similarity above the threshold
-    Args:
-        df (pd.DataFrame): DataFrame with a text column to embed
-        text_col (str): Name of the column containing text descriptions
-        model_name (str): Hugging Face model name
-        model_label (str): Label to differentiate model outputs in column names
-        top_k (int): Number of top neighbors to retrieve (default is 5).
-        threshold (float): Similarity threshold for neighbors (default is 0.9).
-        Returns:
-        pd.DataFrame: Original DataFrame with new columns for neighbors
-    """
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModel.from_pretrained(model_name).to(device)
-    model.eval()
+    for start in range(0, len(df_vocab_shourtcuts), batch_size):
+        # start=10
+        batch = df_vocab_shourtcuts.iloc[start:start + batch_size]
+        user_msg = build_user_message(batch)
+        # Print the entire user_msg without truncation
+        response = call_openai(system_message, user_msg)
+        if response:
+            results.append(response)
+        else:
+            print(f"Failed to process batch starting at {start}")
 
-    texts = df[text_col].fillna("").tolist()
-    vectors = []
-
-    # Batch process to avoid GPU overload
-    batch_size = 64
-    for i in range(0, len(texts), batch_size):
-        batch = texts[i:i+batch_size]
-        vecs = embed_texts(batch, model, tokenizer, device)
-        vectors.append(vecs)
-
-    all_vectors = np.vstack(vectors)
-    vectors_norm = normalize(all_vectors, axis=1)
-
-    # Save top-K and threshold neighbors
-    top_neighbors = get_faiss_neighbors(vectors_norm, texts, top_k=top_k)
-    th_neighbors = get_faiss_neighbors(vectors_norm, texts, threshold=threshold)
-
-    df[f'top_desc_{model_label}'] = top_neighbors
-    df[f'th_desc_{model_label}'] = th_neighbors
-    return df
+    # Create DataFrame from the results
+    df_result = create_df_from_prompt_results(results)
 
 
-# Run for Bio_ClinicalBERT
-df_filter_model1=compute_description_neighbors(
-    df_filter[[product_id_MARA,product_desc, product_desc_update,manufacturer_model,unit_code_number]].copy(),
-    text_col=product_desc_update,
-    model_name="emilyalsentzer/Bio_ClinicalBERT",
-    model_label="bio"
-)
+    # Apply flattening
+    df_flat_alts = df_result.apply(flatten_alternatives, axis=1)
 
-df_filter_model1.insert(
-    df_filter_model1.columns.get_loc('top_desc_bio') + 1,
-    'top_desc_bio_tokens',
-    df_filter_model1['top_desc_bio'].apply(lambda desc_list: tokenize_text(" ".join(desc_list)) if isinstance(desc_list, list) else [])
-)
+    # Explicitly reorder columns by meaning1, match1, accuracy1, etc.
+    ordered_cols = []
+    # Extract the numeric suffix from the last column name and convert it to int
+    i_max = int(df_flat_alts.columns[-1].split('_')[-1])
+    for i in range(1, i_max+1):  # adjust max as needed
+        print(i)
+        ordered_cols += [
+            f"gpt_meaning_other_{i}",
+            f"gpt_desc_match_other_{i}",
+            f"gpt_accuracy_other_{i}"
+        ]
 
-
-# Run for ClinicalBERT
-df_filter_model_2=compute_description_neighbors(
-    df_filter[[product_id_MARA,product_desc, product_desc_update,manufacturer_model,unit_code_number]].copy(),
-    text_col=product_desc_update,
-    model_name="medicalai/ClinicalBERT",
-    model_label="med"
-)
-df_filter_model_2.insert(
-    df_filter_model_2.columns.get_loc('th_desc_med') + 1,
-    'th_desc_med_tokens',
-    df_filter_model_2['th_desc_med'].apply(lambda desc_list: tokenize_text(" ".join(desc_list)) if isinstance(desc_list, list) else [])
-)
+    # Reorder if all columns exist
+    df_flat = df_flat_alts[[col for col in ordered_cols if col in df_flat_alts.columns]]
+    # Merge with the original df_result
+    df_result_expanded = pd.concat([df_result.drop(columns=["gpt_meaning_alternatives"]), df_flat], axis=1)
+    df_result_DB = pd.concat([df_result, df_flat], axis=1)
+    #df_result_DB.to_excel('temp_result/df_prompt_result_org_1007.xlsx', index=False)
+    # df_result_expanded=pd.read_excel('temp_result/df_prompt_result_org_1007.xlsx')
 
 
+    desc_cols = [col for col in df_result_expanded.columns if col.startswith("gpt_desc_match")]
+
+    for col in desc_cols:
+        count_col = col.replace("gpt_desc_match", "gpt_desc_num")
+        insert_loc = df_result_expanded.columns.get_loc(col) + 1
+        df_result_expanded.insert(insert_loc, count_col, df_result_expanded[col].apply(count_len_indices))
+
+    #df_result_expanded.insert(df_result_expanded.columns.get_loc('gpt_desc_match') + 1, 'desc_num', df_result['gpt_desc_match'].apply(count_len_indices))
+    # df_result.insert(df_result.columns.get_loc('gpt_desc_match_other') + 1, 'desc_num_other', df_result['gpt_desc_match_other'].apply(count_len_indices))
+
+
+    #the goal is to check if all the desc_num and desc_num_other are equal to the examples_num
+    df_prompt_merge = df_result_expanded.merge(df_vocab_shourtcuts[['token','examples', 'examples_num']], left_on='input_shortcut',right_on='token', how='left')
+    df_prompt_merge.drop(columns=['token'], inplace=True)
+    print(df_prompt_merge.columns)
+    desc_other_cols = [col for col in df_prompt_merge.columns if col.startswith("desc_num_other")]
+    df_prompt_merge['total_desc_prompt_match'] = df_prompt_merge['desc_num'] + df_prompt_merge[desc_other_cols].sum(axis=1)
+    df_prompt_merge['vaild_desc_match'] = df_prompt_merge['desc_num']+df_prompt_merge[desc_other_cols].sum(axis=1)==df_prompt_merge['examples_num']
+    print(df_prompt_merge.columns)
+
+    # for each description column
+    for col in desc_cols:
+        new_col = col.replace("gpt_desc_match", "matched_desc")
+        insert_loc = df_prompt_merge.columns.get_loc(col) + 1
+        df_prompt_merge.insert(insert_loc, new_col, df_prompt_merge.apply(
+            lambda row: extract_match_descriptions(row['examples'], row.get(col, '')), axis=1))
+    # Save the final DataFrame to Excel
+    df_prompt_merge.to_excel('df_prompt_merge_160.xlsx', index=False)
+
+    # df_prompt_merge=pd.read_excel('temp_result/df_prompt_merge_160.xlsx')
+    # i_max=3
+    #check if there are any meanings that are the same
+    df_normalized_meanings=create_normalized_df(df_prompt_merge, i_max)
+    df_same_meaning = df_normalized_meanings[df_normalized_meanings.duplicated(subset=['meaning'], keep=False)].sort_values(by='meaning', ignore_index=True)
+
+
+    #filter the result only to the rows that the accuracy is above 0.85, only one meaning, the example number is above 5, and the desc_num is equal to the examples_num (vaild_desc_match)
+    df_prompt_final=df_prompt_merge[(df_prompt_merge['gpt_meaning_other_1'].isna()) &
+                            (df_prompt_merge['gpt_accuracy'] >= 0.9) & (df_prompt_merge['examples_num']>4) & (df_prompt_merge['vaild_desc_match'])].reset_index(drop=True)      
+
+    df_prompt_final=df_prompt_final[['input_shortcut', 'gpt_meaning','gpt_accuracy','matched_desc', 'desc_num']]
+    df_prompt_final.columns=['shortcut', 'meaning', 'accuracy', 'matched_desc', 'desc_num']
+    df_prompt_final['source']='prompt'
+
+    #endregion
+
+    #step 4.3: merge the manual vocabulary with the prompt result
+    df_final = pd.concat([df_vocab_file, df_prompt_final], ignore_index=True)
+    print(f"Final vocabulary created with {len(df_final)} unique shortcuts.")
+    print(f"Vocabulary prompt created with {len(df_prompt_final)} unique shortcuts.")
+
+    #df_final.to_excel('df_final_voacb_prompt_manual.xlsx', index=False)
+    df_final=pd.read_excel('temp_result/run1/df_final_voacb_prompt_manual.xlsx')
+
+    df_shortcut_stay = df_vocab[
+        ~df_vocab['token'].str.lower().isin(df_final['shortcut'].str.lower())
+    ].reset_index(drop=True)[['token']]
+    df_shortcut_stay.rename(columns={'token': 'shortcut'}, inplace=True)
+    df_shortcut_stay['meaning'] = df_shortcut_stay['shortcut']  # Use the shortcut itself as meaning
+    df_shortcut_stay['source'] = 'still shortcut'  # Use the shortcut itself as meaning
+
+
+    #endregion
+
+
+    # region Step 5: apply the dictionary on the dscription column
+    # Ensure lowercase for consistency and drop missing
+    shortcut_dict = (
+        df_final.dropna(subset=["shortcut", "meaning"])
+                .assign(shortcut=lambda df: df["shortcut"].str.lower(),
+                        meaning=lambda df: df["meaning"].str.lower())
+                .set_index("shortcut")["meaning"]
+                .to_dict()
+    )
+    shortcut_block_dict = (
+        df_shortcut_stay.dropna(subset=["shortcut", "meaning"])
+                .assign(shortcut=lambda df: df["shortcut"].str.lower(),
+                        meaning=lambda df: df["meaning"].str.lower())
+                .set_index("shortcut")["meaning"]
+                .to_dict()
+    )
+
+
+    # Step 5.2: Function to replace all shortcuts in a description
+    #df_filter.drop(columns='desc_fix', inplace=True)  # Remove existing 'desc_fix' column if it exists
+
+    desc = "f.a.m.e MIX GLC-50 100MG NEAT"
+    desc="syring w.o.blood"
+    new_text, used = replace_shortcuts_token_based(desc.lower(), shortcut_dict,shortcut_block_dict)
+    print(new_text, used)
+
+    df_filter[['desc_fix', 'shortcuts_used']] = df_filter[product_desc_update].apply(
+        lambda x: pd.Series(replace_shortcuts_token_based(x, shortcut_dict))
+    )
+
+
+    # df_filter.insert(df_filter.columns.get_loc(product_desc_update) + 1, 'desc_fix', df_filter[product_desc_update].apply(lambda x: replace_shortcuts(x,shortcut_dict)))
+    df_changes = df_filter[
+        df_filter['shortcuts_used'].apply(lambda x: isinstance(x, list) and len(x) > 0)
+    ].reset_index(drop=True)[[product_id_MARA, product_desc_update, 'desc_fix', 'shortcuts_used']]
+
+    # Flatten all used shortcuts into one set
+    used_shortcuts = set(
+        shortcut
+        for used in df_filter['shortcuts_used']
+        if isinstance(used, list)
+        for shortcut in used
+    )
+    all_shortcuts = set(shortcut_dict.keys())
+    unused_shortcuts = all_shortcuts - used_shortcuts
+    unused_meanings = {shortcut_dict[sc] for sc in unused_shortcuts}
+    # Print unused shortcuts and their meanings
+    print(f"Unused shortcuts: {unused_shortcuts}")
+    print(f"Unused meanings: {unused_meanings}")  
+
+
+    df_new_desc=df_filter[[product_id_MARA,'desc_fix']]
+    df_new_desc.to_excel('df_new_desc.xlsx', index=False)
+    df_filter.to_excel('temp_result/df_new_desc_all_columns.xlsx', index=False)
+    print(df_filter.columns)
+
+
+
+    #endregion
+
+    # region Step 6: Save the final vocabulary and changes to DB
+
+ 
+    #next run test
+
+    df_save=df_filter[[product_id_MARA, product_desc, product_desc_update, final_desc, manufacturer_model, 'shortcuts_used']]
+    df_save_updated=inserted_column(replace_empty_with_null_safe(df=df_save.copy(), ls_drop=['shortcuts_used']),flag_insert=True, flag_update=False)
+    df_save_updated['shortcuts_used']=df_save_updated['shortcuts_used'].apply(lambda x: json.dumps(x))
+    # df_save_updated['shortcuts_used_JSON_text']=df_save_updated['shortcuts_used_JSON'].apply(lambda x: json.loads(x))
+    load_dataframe_to_table(df_save_updated,'CATALOG_PLUS' ,products_desc_table, mode='replace')
+
+
+
+    #endregion
 
 
 
 
 
 
-#endregion
 
 
 
@@ -707,48 +1114,30 @@ df_filter_model_2.insert(
 
 
 
-# from nltk.stem import WordNetLemmatizer
-# from nltk.corpus import wordnet
-# from nltk import pos_tag
-# import pandas as pd
 
 
 
-# Download resources (if not already done)
-# nltk.download('punkt')
-# nltk.download('wordnet')
-# nltk.download('averaged_perceptron_tagger')
-# nltk.download('omw-1.4')
 
-# lemmatizer = WordNetLemmatizer()
 
-# # POS tag mapping function
-# def get_wordnet_pos(treebank_tag):
-#     if treebank_tag.startswith('J'):
-#         return wordnet.ADJ
-#     elif treebank_tag.startswith('V'):
-#         return wordnet.VERB
-#     elif treebank_tag.startswith('N'):
-#         return wordnet.NOUN
-#     elif treebank_tag.startswith('R'):
-#         return wordnet.ADV
-#     else:
-#         return wordnet.NOUN
 
-# # Lemmatization function for one text string
-# def lemmatize_text(text):
-#     tokens = word_tokenize(text)
-#     tagged = pos_tag(tokens)
-#     lemmatized = [
-#         lemmatizer.lemmatize(token.lower(), get_wordnet_pos(pos))
-#         for token, pos in tagged
-#         if token.isalpha()
-#     ]
-#     return set(lemmatized)
-# # Tokenization function (keep word order, remove punctuation)
 
-# word = 'Patients'
 
-# lemma = lemmatizer.lemmatize(word.lower(), pos_tag(word))
 
-# print(f"Lemmatized '{word}' as '{lemma}'")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

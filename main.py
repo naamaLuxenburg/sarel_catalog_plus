@@ -1,6 +1,9 @@
 import streamlit as st
 import pandas as pd
 from io import BytesIO
+# import os
+# import sys
+from app.models.match_descriptions import create_match_product
 
 st.set_page_config(page_title="Sarel Catalog Enrichment", layout="centered")
 
@@ -15,19 +18,23 @@ if uploaded_file is not None:
     st.write("תצוגה מקדימה של הקובץ:")
     st.dataframe(df)
 
-    if st.button("הרץ תהליך (כרגע דמה)"):
+    if st.button("הרץ תהליך התאמה"):
         # Simulated processing
-        st.info("מעבד... (לא באמת עושה כלום כרגע)", icon="🔄")
+        st.info("מריץ התאמה", icon="🔄")
+        df_result = create_match_product(df)
+
+        st.success("ההתאמה הסתיימה! ✅")
+        st.dataframe(df_result)
+
         
         # Simulate backend result (just reuse original DataFrame for now)
         output = BytesIO()
-        df.to_excel(output, index=False, engine='openpyxl')
+        df_result.to_excel(output, index=False, engine='openpyxl')
         output.seek(0)
 
-        st.success("עיבוד הסתיים! לחץ להורדה.")
         st.download_button(
-            label="📥 הורד קובץ מעובד",
+            label="📥 הורד קובץ תוצאה",
             data=output,
-            file_name="processed_file.xlsx",
+            file_name="matched_output.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
