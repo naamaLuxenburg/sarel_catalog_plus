@@ -7,6 +7,10 @@ from tqdm import tqdm
 import logging
 import os
 import sys
+import streamlit as st
+import json
+
+
 # Add root directory to sys.path safely for both script and interactive environments
 try:
     root_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../'))
@@ -20,7 +24,7 @@ if root_path not in sys.path:
     sys.path.append(root_path)
     print(f"Added root path to sys.path: {root_path}")
 
-from database.db_SAP_utils import load_config, get_connection_string,connect_to_db_with_query
+#from database.db_SAP_utils import load_config, get_connection_string,connect_to_db_with_query
 from app.constants import *
 print(f"✅ constants.py imported successfully {final_desc}")
 
@@ -28,6 +32,119 @@ print(f"✅ constants.py imported successfully {final_desc}")
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger()
 prod=True
+try: # whether streamlit is installed and actually running inside a Streamlit app
+    import streamlit as st
+    STREAMLIT_AVAILABLE = st._is_running_with_streamlit
+except (ImportError, AttributeError):
+    STREAMLIT_AVAILABLE = False
+
+
+
+def load_config(config_file=None):
+    """
+    Loads the configuration file to get database credentials.
+
+    - If Streamlit is available (i.e., running in a Streamlit app), it loads from st.secrets.
+    - Otherwise, it loads from a local JSON file (DB_config.json).
+
+    Args:
+    config_file (str or None): Path to the configuration JSON file. If None, it defaults to database/DB_config.json relative to this file.
+
+    Returns:
+    dict: The configuration values.
+    """
+    if STREAMLIT_AVAILABLE and hasattr(st, "secrets"):
+        print(f'used STREAMLIT secret.toml')
+        # Load from Streamlit secrets
+        return {
+            "DB_AI_USER": st.secrets["DB_AI_USER"],
+            "DB_AI_PASSWORD": st.secrets["DB_AI_PASSWORD"],
+            "DB_AI_SERVER_PROD": st.secrets["DB_AI_SERVER_PROD"],
+            "DB_AI_DATABASE_PROD": st.secrets.get("DB_AI_DATABASE_PROD", "default_db_name"),
+            "DB_CATALOG_PLUS_DATABASE_PROD": st.secrets.get("DB_CATALOG_PLUS_DATABASE_PROD", "default_db_name")
+
+        }
+    # Fallback to JSON file
+    if config_file is None:
+        try:
+            # Normal script mode
+            base_path = os.path.dirname(__file__)
+        except NameError:
+            # Interactive mode fallback
+            base_path = os.getcwd()
+
+        print(f'used DB_config.json')
+        config_file = os.path.join(base_path, "DB_config.json")
+
+    with open(config_file, 'r') as f:
+        return json.load(f)
+
+
+def get_connection_string(prod, db_label='SAP',driver='ODBC Driver 18 for SQL Server',config_file=None):
+    """
+    Generates a connection string to connect to the SQL Server database using config from a JSON file.
+
+    Args:
+    prod (bool): If False, connects to the QA environment; if True, connects to the production environment.
+    db_label (str): A label to differentiate between multiple DBs (e.g., 'AI').
+    driver (str): The ODBC driver to use for the connection. Default is 'ODBC Driver 18 for SQL Server'.
+    config_file (str): Path to the configuration JSON file (default is 'config.json').
+
+    Returns:
+    str: The connection string to connect to the database.
+    """
+    config = load_config(config_file)
+
+    if not prod:
+        server = config.get(f'DB_{db_label}_SERVER_QA', 'default_server')
+        database = config.get(f'DB_{db_label}_DATABASE_QA', 'default_db')
+    else:
+        server = config.get(f'DB_{db_label}_SERVER_PROD', 'default_server')
+        database = config.get(f'DB_{db_label}_DATABASE_PROD', 'default_db')
+
+    username = config.get(f'DB_{db_label}_USER', 'default_user')
+    password = config.get(f'DB_{db_label}_PASSWORD', 'default_password')
+
+    connection_string = f'mssql+pyodbc://{username}:{password}@{server}/{database}?driver={driver}&TrustServerCertificate=yes'
+    return connection_string
+
+def connect_to_db_with_query(connection_string, query):
+    """
+    Connects to the database using the given connection string and executes the query - SELECT query.
+    The results are returned as a Pandas DataFrame.
+
+    Args:
+        connection_string (str): The connection string for the specific database.
+        query (str): The SQL query to execute.
+
+    Returns:
+        pd.DataFrame: The result of the query as a DataFrame, or None in case of an error.
+    """
+    time_start = datetime.datetime.now()
+    logger.info(f"Start working on query at {time_start.strftime('%Y-%m-%d %H:%M:%S')}")
+
+    try:
+        # Create engine and initiate connection
+        engine = create_engine(connection_string)
+        chunks = []
+
+        # Use tqdm for progress tracking while fetching chunks
+        with tqdm(desc="Fetching data", unit="chunk", dynamic_ncols=True) as pbar:
+            for i, chunk in enumerate(pd.read_sql(query, engine, chunksize=1000)):
+                chunks.append(chunk)
+                pbar.update(1)
+                pbar.total = i + 1  # Update total dynamically
+
+        # Concatenate all chunks into one DataFrame
+        df = pd.concat(chunks, ignore_index=True)
+        logger.info(f"Query completed successfully, {len(df)} rows fetched.")
+        return df
+
+    except Exception as e:
+        # Logging the error with more context
+        logger.error(f"Error while executing query: {e}")
+        return None
+
 
 def replace_empty_with_null_safe(df, ls_drop):
     """
