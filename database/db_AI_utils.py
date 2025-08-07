@@ -33,9 +33,14 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger()
 prod=True
 try: # whether streamlit is installed and actually running inside a Streamlit app
+    print("🔐 Secrets: ", dict(st.secrets))  # safe for debug (don’t log in prod)
     STREAMLIT_AVAILABLE = hasattr(st, "secrets") and bool(st.secrets)
+    print(f'used STREAMLIT secret.toml - STREAMLIT_AVAILABLE={STREAMLIT_AVAILABLE}')
 except (ImportError, AttributeError):
     STREAMLIT_AVAILABLE = False
+    print(f'DB_config Fallback - STREAMLIT_AVAILABLE={STREAMLIT_AVAILABLE}')
+
+
 
 
 
@@ -53,7 +58,6 @@ def load_config(config_file=None):
     dict: The configuration values.
     """
     if STREAMLIT_AVAILABLE and hasattr(st, "secrets"):
-        print(f'used STREAMLIT secret.toml')
         # Load from Streamlit secrets
         return {
             "DB_AI_USER": st.secrets["DB_AI_USER"],
