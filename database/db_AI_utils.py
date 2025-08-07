@@ -473,5 +473,5 @@ def load_dataframe_to_table(df, db_label, table_name, mode='append', auto_create
 
 
 if __name__ == "__main__":
-    # print(load_config())
+    print(load_config())
     #df_org=get_table_AI('CE1SARL_Invoice', [], [2025])
