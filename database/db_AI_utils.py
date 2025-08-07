@@ -9,8 +9,6 @@ import os
 import sys
 import streamlit as st
 import json
-import pytds
-
 
 
 # Add root directory to sys.path safely for both script and interactive environments
