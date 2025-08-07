@@ -33,8 +33,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger()
 prod=True
 try: # whether streamlit is installed and actually running inside a Streamlit app
-    import streamlit as st
-    STREAMLIT_AVAILABLE = st._is_running_with_streamlit
+    STREAMLIT_AVAILABLE = hasattr(st, "secrets") and bool(st.secrets)
 except (ImportError, AttributeError):
     STREAMLIT_AVAILABLE = False
 
@@ -474,4 +473,5 @@ def load_dataframe_to_table(df, db_label, table_name, mode='append', auto_create
 
 
 if __name__ == "__main__":
-    df_org=get_table_AI('CE1SARL_Invoice', [], [2025])
+    # print(load_config())
+    #df_org=get_table_AI('CE1SARL_Invoice', [], [2025])
