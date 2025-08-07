@@ -9,6 +9,8 @@ import os
 import sys
 import streamlit as st
 import json
+import pytds
+
 
 
 # Add root directory to sys.path safely for both script and interactive environments
@@ -108,7 +110,9 @@ def get_connection_string(prod, db_label='SAP',driver='ODBC Driver 18 for SQL Se
     username = config.get(f'DB_{db_label}_USER', 'default_user')
     password = config.get(f'DB_{db_label}_PASSWORD', 'default_password')
 
-    connection_string = f'mssql+pyodbc://{username}:{password}@{server}/{database}?driver={driver}&TrustServerCertificate=yes'
+    # connection_string = f'mssql+pyodbc://{username}:{password}@{server}/{database}?driver={driver}&TrustServerCertificate=yes'
+    connection_string = f"mssql+pytds://{username}:{password}@{server}/{database}"
+
     return connection_string
 
 def connect_to_db_with_query(connection_string, query):
@@ -257,6 +261,7 @@ def get_table_AI(table_name,db_label, ls_field=[],ls_year=[]):
     :return:
     """
     conn_str = get_connection_string(prod=prod, db_label=db_label)
+    print(f"conn_str={conn_str}")
     query = get_query_AI(table_name,ls_field, ls_year)
     if query is None or str(query).startswith("Error"):
         print(f"[ERROR] Failed to get query: {query}")
@@ -477,5 +482,5 @@ def load_dataframe_to_table(df, db_label, table_name, mode='append', auto_create
 
 
 if __name__ == "__main__":
-    print(load_config())
-    #df_org=get_table_AI('CE1SARL_Invoice', [], [2025])
+    #print(load_config())
+    df_MARA =get_table_AI('MARA_Products', 'AI')
