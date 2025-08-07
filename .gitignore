@@ -1,2 +1,5 @@
 app/models/temp_excel/
 input/
+database/DB_config.json
+.streamlit/secrets.toml
+app/.env

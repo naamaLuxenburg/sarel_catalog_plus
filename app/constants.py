@@ -3,9 +3,6 @@
 print("✅ constants.py is running")
 # Constants used across the application
 
-#keys
-new_openAI_key='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'
-
 
 #sarel catalog constants
 product_id_CE1SARL='ARTNR'
@@ -33,6 +30,15 @@ med_dosage='Dosage_Form_org'
 med_dose='dose'
 
 
+#price field
+price_client='HIENR'
+price_in_coin='KBETR'
+price_coin='KONWA'
+price_unit='KMEIN'
+price_unit_ILS='KMEIN_ILS'
+
+
+
 #constants for filtering dvs (spart)
 ls_dvs=['11','12','22','25']
 
@@ -47,19 +53,22 @@ th_manu= 85
 th_desc = 85
 
 
-#constants for input data from suppliers
+#constants for input data from suppliers - need to change
 input_supplier_name='Supplier Name'
 input_provider_num='Provider number supplier'
 input_id_number='Id number'
 input_desc='Description'
+input_desc_norm='Description_norm'
+input_id='input_id'
 
-#constants for db
+
+
+
+#constants for db catalog new
 #tables name
 products_desc_table='products_new_desc'
 shortcut_table='shortcut_dict'
 prompt_table='prompt_result'
-
-
 #columns
 inserted_date='inserted_at'
 updated_date='updated_at'

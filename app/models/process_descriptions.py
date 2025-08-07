@@ -17,6 +17,8 @@ import openai
 from openai import OpenAI
 import time
 import json
+from dotenv import load_dotenv
+
 
 
 # Add root directory to sys.path safely for both script and interactive environments
@@ -36,14 +38,12 @@ if root_path not in sys.path:
 # from database.db_AI_utils import load_dataframe_to_table, inserted_column, replace_empty_with_null_safe,get_table_AI
 from database.db_AI_utils import *
 from app.constants import *
-print(f"✅ constants.py imported successfully {final_desc}")
+load_dotenv()
+
+
 
 #endregion
 
-#region enviroment variables
-#new_openAI_key='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'
-
-#endregion
 
 #region functions
 
@@ -904,6 +904,7 @@ if __name__ == "__main__":
 
     #step 4.2: create a dictionary with elboreated tokens and all the shourtcuts using prompt engineering
     #region prompting for find meaning to the shortcuts
+    new_openAI_key=os.getenv("new_openAI_key")
     client = OpenAI(api_key=new_openAI_key)  # Replace with your ke
 
     # System prompt for chain-of-thought guidance

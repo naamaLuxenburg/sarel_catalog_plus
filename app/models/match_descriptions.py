@@ -1,8 +1,10 @@
 import pandas as pd
+from collections import OrderedDict
 import os
 import sys
 from rapidfuzz import process, fuzz
 import importlib
+import re
 
 
 # Add root directory to sys.path safely for both script and interactive environments
@@ -31,13 +33,32 @@ def read_prodcuts_data():
     Reads all the prodcuts exist data returns a DataFrame.
     """
     df_MARA =get_table_AI('MARA_Products', 'AI')
+    df_med =get_table_AI('Med_data', 'AI')
+    df_update_price =get_table_AI(table_name='A501_A703_A503_Updated_prices',db_label='AI')
+    df_update_price_filter=df_update_price[df_update_price[price_client]=='X'].reset_index(drop=True) #only General Sarel price list
+    cols_med= [product_id_MARA,med_generic,med_concentration,med_dosage, med_dose]
+    cols_price=[product_id_MARA,price_in_coin, price_coin, price_unit, price_unit_ILS]
+    
+
+    df_products_med=df_MARA.merge(df_med[cols_med], on=product_id_MARA,how='left')
+    df_products_price=df_products_med.merge(df_update_price_filter[cols_price], on=product_id_MARA, how='left')
+
+
     desc_path = os.path.join(root_path, 'app/models/temp_result')
     df_new_desc = pd.read_excel(os.path.join(desc_path, 'df_new_desc.xlsx')) ##it will be from the DB in the future
-    df_products = df_new_desc.merge(df_MARA[[product_id_MARA,product_desc,product_dv_id,manufacturer_model,supplier_name, product_basic_unit,product_order_unit]], on=product_id_MARA, how='left')
-    print(f"✅ read_prodcuts_data() completed")
-    print(f"Total products in df_products: {len(df_products)}")
+    df_products_total = df_products_price.merge(df_new_desc, on=product_id_MARA, how='left')
 
-    return df_products
+    ##remove later:
+    df_products_total[final_desc]=df_products_total[final_desc].fillna(df_products_total[product_desc])
+
+    cols_MARA=[product_id_MARA,product_desc,final_desc,product_dv_id,manufacturer_model,supplier_name, product_basic_unit,product_order_unit]
+    cols_all = cols_MARA + cols_med + cols_price
+    cols_filtered=list(OrderedDict.fromkeys(cols_all))
+    df_products_final=df_products_total[cols_filtered]
+    print(f"✅ read_prodcuts_data() completed")
+    print(f"Total products in df_products: {len(df_products_final)}")
+
+    return df_products_final
 
 def filtered_input_data(df_input):
     """
@@ -51,11 +72,12 @@ def filtered_input_data(df_input):
     df_input_heb_filtered = df_input[~df_input[input_desc].apply(contains_hebrew)].reset_index(drop=True)
     df_input_filtered=df_input_heb_filtered.drop_duplicates().reset_index(drop=True)
     df_input_filtered.insert(0, 'input_id', range(1, len(df_input_filtered) + 1))
+    df_input_filtered[input_desc_norm]=df_input_filtered[input_desc].str.lower()
     num_input_records = df_input_filtered['input_id'].nunique()
     print(f'Total input records after filtering Hebrew and remove duplicates records: {num_input_records}')
-    df_input_filtered_org= df_input_filtered.copy()
+    # df_input_filtered_org= df_input_filtered.copy()
 
-    return df_input_filtered, df_input_filtered_org
+    return df_input_filtered
 
 
 def get_fuzzy_matches(input_val, reference_list, threshold=85, top_k=5):
@@ -78,18 +100,30 @@ def get_fuzzy_matches(input_val, reference_list, threshold=85, top_k=5):
     Uses RapidFuzz with token_sort_ratio for scoring.
     
     """
+
+    # print(f'The th is {threshold}')
     # Check if input_val is empty or NaN 
     if not isinstance(input_val, str) or input_val.strip() == "":
         return None, None,None, None  # Skip if empty or NaN
 
-    # Get all matches
+    
+    #score_methods=fuzz.token_set_ratio #also for reordered and Flexible with extra/missing words
+    score_methods=fuzz.token_sort_ratio #Good for reordered tokens
+    # limit=round(len(reference_list)/3)
+    limit=250
+    
+    # the number of matches depended on the limit.
     all_matches = process.extract(
         input_val,
         reference_list,
-        scorer=fuzz.token_sort_ratio
+        scorer=score_methods, limit=limit
     )
         # Format as list of dicts
-    all_matches_dict = [{"match": m[0], "score": m[1]} for m in all_matches]
+    all_matches_dict = sorted(
+        [{"match": m[0], "score": m[1]} for m in all_matches],
+        key=lambda x: x["score"],
+        reverse=True
+    )
     # Top K matches (even if score is low)
     top_matches = all_matches_dict[:top_k]
     
@@ -123,6 +157,7 @@ def apply_fuzzy_match(df, col_input, reference_col, reference_df, suffix="", thr
             - best score
     """
     reference_list = reference_df[reference_col].dropna().unique().tolist()
+    # print(f'the ref list is: {reference_list}')
     print(f"🔍 Starting fuzzy match: {col_input} → {reference_col} (threshold={threshold}, top_k={top_k})")
     
     result_cols = [f"{suffix}top_matches", f"{suffix}matches_above_threshold", f"{suffix}best_match", f"{suffix}best_score"]
@@ -148,11 +183,11 @@ def create_fuzzy_match_columns_statistics(df_input_filtered, df_products, suffix
 
     elif 'desc' in suffix: #description
         fuzzy_value='descriptions'
-        col_input=input_desc
+        col_input=input_desc_norm
         reference_col= 'desc_fix'
     else: 
         fuzzy_value='generic'
-        col_input=input_desc
+        col_input=input_desc_norm
         reference_col= 'fix_Generic_Name' #med_generic
     
     if col_input not in df_input_filtered.columns:
@@ -392,7 +427,7 @@ def create_match_product(df_input):
     df_products=read_prodcuts_data()
 
     #step 2 - read the input data and filter it
-    df_input_filtered,df_input_filtered_org=filtered_input_data(df_input)
+    df_input_filtered=filtered_input_data(df_input)
 
     #step 3 - apply fuzzy matching and updated df
     #parames
@@ -418,9 +453,9 @@ def create_match_product(df_input):
 
 if __name__ == "__main__":
     input_path = os.path.join(root_path, 'input')
-    file_name='Medical Commodities IMC - input'
+    #file_name='Medical Commodities IMC - input'
+    file_name='Sarel_TBL JER 2025 01 EN Health standard list - input'
     df_input = pd.read_excel(os.path.join(input_path, f'{file_name}.xlsx'))
-
     df_final=create_match_product(df_input)
 
 
@@ -429,19 +464,7 @@ if __name__ == "__main__":
     #region separete function
     #region step 1 - read the products data
     df_products=read_prodcuts_data()
-    df_update_price =get_table_AI(table_name='A501_A703_A503_Updated_prices',db_label='AI')
-    df_med =get_table_AI('Med_data', 'AI')
-    print(df_med.columns)
-    med_indication='Indication'
-    med_generic='fix_Generic_Name'
-    med_concentration='Concentration_Fix'
-    med_dosage='Dosage_Form_org'
-    med_dose='dose'
-
-    df_products_med=df_products.merge(df_med[[product_id_MARA, med_generic,med_concentration,med_dosage, med_dose]], on=product_id_MARA,how='left')
-
-
-    
+    # a=df_products[df_products['MATNR'].isin(['2093563518', '2093697964','2093563488','2093563519'])]
 
     #endregion
 
@@ -454,7 +477,9 @@ if __name__ == "__main__":
     # df_input.to_excel(os.path.join(input_path, 'input1.xlsx'), index=False)
 
     #endregion
-    df_input_filtered,df_input_filtered_org=filtered_input_data(df_input)
+    print(f'The original number of input records {len(df_input)}')
+    # input_desc_norm='Description_norm'
+    df_input_filtered=filtered_input_data(df_input)
 
 
     #region step 3 - apply fuzzy matching and updated df
@@ -468,11 +493,17 @@ if __name__ == "__main__":
     # th_desc = 85
 
 
+    # #test
+    # matches = process.extract(
+    # "BLOOD GROUPING SERUM ANTI- A, MONOCLONAL, 10ml, btl.",
+    # df_products[final_desc].dropna().unique().tolist(),
+    # scorer=fuzz.token_set_ratio, limit=len( df_products[final_desc].dropna().unique().tolist()))
+
+
     df_input_manu=create_fuzzy_match_columns_statistics(df_input_filtered.copy(), df_products, suffix_manu,th_manu)
     df_input_desc=create_fuzzy_match_columns_statistics(df_input_manu.copy(), df_products, suffix_desc,th_desc)
-    df_input_gen=create_fuzzy_match_columns_statistics(df_input_desc.copy(), df_products_med, suffix_gen,0.5)
+    df_input_gen=create_fuzzy_match_columns_statistics(df_input_desc.copy(), df_products, suffix_gen,25)
 
-    import re
     def normalize_and_tokenize(text):
         """Lowercase, remove punctuation, and split into unique tokens."""
         if not isinstance(text, str):
@@ -521,47 +552,71 @@ if __name__ == "__main__":
         best_match = matched_generics_sorted[0] if matched_generics_sorted else None
         score = len(matched_generics_sorted)
 
-        return input_val, matched_generics_sorted[:top_k], best_match, score
+        return matched_generics_sorted[:top_k], best_match, score
 
     
-
-
     reference_generics = (
-        df_products_med[med_generic]
+        df_products[med_generic]
         .dropna()                      # Remove NaN values
         .loc[lambda x: x != '']       # Remove empty strings
         .unique()
         .tolist()
     )
 
-    print(df_input_gen.columns)
-    df_input_gen[["generic_to_match", "generic_matches", "generic_best_match", "generic_match_score"]] = df_input_gen[input_desc].apply(
+    df_input_gen[["generic_matches", "generic_best_match", "generic_match_score"]] = df_input_gen[input_desc_norm].apply(
         lambda x: pd.Series(get_tokenwise_exact_generic_matches(x, reference_generics))
     )
+    # df_input_gen.drop(columns='generic_to_match',inplace=True)
 
 
 
-    df_final=enhanced_breakdown_and_final_match(df_input_gen.copy(), df_products)
-    print(df_final.columns)
-    df_final_filter=df_final[['input_id', 'Id number', 'Description', 'Category',
-       'Unit of Measure\n in smallest unit', 'Quantity \nin smallest unit',
-       'Unit Price in USD\nper smallest unit', 'Delivery Time\n in days',
-       'Alternative item / Comments',
-       'desc_top_matches','gen_top_matches','generic_best_match','generic_match_score']]
+    #df_final=enhanced_breakdown_and_final_match(df_input_gen.copy(), df_products)
+    #print(df_final.columns)
+    # df_final_filter=df_final[['input_id', 'Id number', 'Description', 'Category',
+    #    'Unit of Measure\n in smallest unit', 'Quantity \nin smallest unit',
+    #    'Unit Price in USD\nper smallest unit', 'Delivery Time\n in days',
+    #    'Alternative item / Comments',
+    #    'desc_top_matches','gen_top_matches','generic_best_match','generic_match_score']]
+    df_final_filter=df_input_gen[['input_id', 'Code', 'Description', 
+    'desc_top_matches','gen_top_matches','generic_best_match','generic_match_score']]
     
-    # Step 1: Explode the list so each dict becomes a row
-    df_exploded = df_final_filter.explode(['desc_top_matches','gen_top_matches']).reset_index(drop=True)
+    def explode_and_normalize_dict_columns(df, dict_columns_with_prefix):
+        """
+        Explodes and normalizes dictionary columns from a DataFrame.
 
-    # Normalize the dictionaries in both exploded columns
-    desc_df = pd.json_normalize(df_exploded['desc_top_matches'])
-    gen_df = pd.json_normalize(df_exploded['gen_top_matches'])
+        Args:
+            df (pd.DataFrame): Input DataFrame.
+            dict_columns_with_prefix (dict): Dictionary where keys are column names 
+                                            to process and values are their prefixes.
+                                            Example: {'desc_top_matches': 'desc_', 'gen_top_matches': 'gen_'}
 
-    # 2. Normalize the dict in each row into separate columns
-   # Drop the original list columns and concatenate everything
-    df_exploded = pd.concat(
-        [df_exploded.drop(columns=['desc_top_matches', 'gen_top_matches']), desc_df.add_prefix('desc_'), gen_df.add_prefix('gen_')],
-        axis=1
-    )
+        Returns:
+            pd.DataFrame: Transformed DataFrame with exploded and normalized columns.
+        """
+        df = df.copy()
+
+        # Step 1: Explode all relevant columns
+        df = df.explode(list(dict_columns_with_prefix.keys())).reset_index(drop=True)
+
+        # Step 2: Normalize and prefix each exploded dict column
+        normalized_parts = []
+        for col, prefix in dict_columns_with_prefix.items():
+            norm = pd.json_normalize(df[col])
+            norm.columns = [f"{prefix}{c}" for c in norm.columns]
+            normalized_parts.append(norm)
+
+        # Step 3: Drop original dict columns and concatenate the normalized ones
+        df = df.drop(columns=dict_columns_with_prefix.keys())
+        df = pd.concat([df] + normalized_parts, axis=1)
+
+        return df
+
+
+    dict_columns = {
+    'desc_top_matches': 'desc_',
+    'gen_top_matches': 'gen_'
+    }
+    df_exploded=explode_and_normalize_dict_columns(df_final_filter.copy(), dict_columns)
 
 
     df_exploded['gen_match']=np.where(
@@ -576,16 +631,13 @@ if __name__ == "__main__":
     df_exploded.drop(columns=['generic_best_match','generic_match_score','gen_score','gen_match'],inplace=True)
 
 
-
-    df_exploded_desc=df_exploded.merge(df_products_med[[final_desc,product_id_MARA,med_generic]], left_on='desc_match', right_on=final_desc, how='left')
-    df_products_med_filter=df_products_med[~df_products_med[med_generic].isna()]
+    ### for each row merge according to the final result
+    df_exploded_desc=df_exploded.merge(df_products[[final_desc,product_id_MARA,med_generic]], left_on='desc_match', right_on=final_desc, how='left')
+    df_products_med_filter=df_products[~df_products[med_generic].isna()]
     df_exploded_gen=df_exploded_desc.merge(df_products_med_filter[[final_desc,product_id_MARA,med_generic]], left_on='generic_final', right_on=med_generic, how='left')
 
     base_cols = [
-    'input_id', 'Id number', 'Description', 'Category',
-    'Unit of Measure\n in smallest unit', 'Quantity \nin smallest unit',
-    'Unit Price in USD\nper smallest unit', 'Delivery Time\n in days',
-    'Alternative item / Comments'
+    'input_id', 'Code', 'Description'
     ]
 
     df_x = df_exploded_gen[base_cols + ['MATNR_x', 'desc_fix_x','fix_Generic_Name_x','desc_score']]
@@ -598,18 +650,19 @@ if __name__ == "__main__":
     
     # Step 2: Build a mapping from input_id → set of valid generic_final values from desc rows
     desc_generics_per_input = (
-        df_x.groupby('input_id')[med_generic]
+        df_x.groupby(input_id)[med_generic]
     .agg(lambda x: set(filter(pd.notna, x)))  # keep non-null only
     .to_dict()
     )
 
+    
     # Step 3: Define filter mask for generic rows to DROP
     def should_drop(row):
-        input_id = row['input_id']
+        input_id_val = row[input_id]
         generic_val = row[med_generic]
         score = row['score']
 
-        desc_generics = desc_generics_per_input.get(input_id, set())
+        desc_generics = desc_generics_per_input.get(input_id_val, set())
 
         # If this generic value is not in desc and score < 50 → drop it
         if generic_val not in desc_generics and score <= 50:
@@ -622,7 +675,7 @@ if __name__ == "__main__":
 
     df_flattened = pd.concat([df_x, df_y_keep], ignore_index=True)
 
-    df_flattened_filter=df_flattened[df_flattened['MATNR'].notna() & (df_flattened['MATNR'] != '')]
+    df_flattened_filter=df_flattened[df_flattened[product_id_MARA].notna() & (df_flattened[product_id_MARA] != '')]
     # df_flattened_filter.to_excel(os.path.join(input_path, 'test4.xlsx'), index=False)
 
 
@@ -630,12 +683,12 @@ if __name__ == "__main__":
     # Step 2: Group and aggregate
     df_flattened_final = (
         df_flattened_filter
-        .groupby(['input_id', 'MATNR'], as_index=False)
+        .groupby([input_id, product_id_MARA], as_index=False)
         .agg({
             'score': 'first',
             'source': lambda x: 'both' if len(set(x)) > 1 else list(x)[0],
-            'desc_fix': 'first',
-            'fix_Generic_Name': 'first',
+            final_desc: 'first',
+            med_generic: 'first',
             # Add more fields as needed
         })
         
@@ -659,18 +712,45 @@ if __name__ == "__main__":
             return group
 
     # Apply the logic
-    df_flattened_final = df_flattened_final.groupby('input_id', group_keys=False).apply(filter_high_scores_only)
+    df_flattened_final = df_flattened_final.groupby(input_id, group_keys=False).apply(filter_high_scores_only)
 
-    df_flattened_final_result=df_input_filtered.merge(df_flattened_final, on='input_id',how='left')
-    df_final_result=df_flattened_final_result.merge(df_products_med[[product_id_MARA,product_dv_id,product_desc, manufacturer_model, supplier_name, med_concentration, med_dosage, med_dose]],on=product_id_MARA,how='left')
+    df_flattened_final_result=df_input_filtered.merge(df_flattened_final, on=input_id,how='left')
+    df_final_result=df_flattened_final_result.merge(df_products[[product_id_MARA,product_dv_id,product_desc, manufacturer_model, supplier_name, med_concentration, med_dosage, med_dose,price_in_coin, price_coin, price_unit, price_unit_ILS]],on=product_id_MARA,how='left')
     print(len(df_final_result))
 
 
     def filter_and_boost_by_column(df, column_name):
+        """
+            Filters and boosts match scores within each group based on a column's value being present in the normalized input description.
+
+            Parameters:
+            -----------
+            df : pd.DataFrame
+                The DataFrame containing match results, including a score column and normalized input descriptions.
+
+            column_name : str
+                The name of the column to check (e.g., 'Generic', 'Substance', etc.).
+                The function checks whether the column value (if not empty) appears in the normalized input description.
+
+            Returns:
+            --------
+            pd.DataFrame
+                The updated DataFrame. If a row's `column_name` value is found inside the normalized input description,
+                its match score is increased by 10. This is done per group defined by `input_id`.
+
+            Notes:
+            ------
+            - The function groups rows by `input_id` (must be defined globally).
+            - Within each group, if any row has a non-empty `column_name` value that exists in the `input_desc_norm` field,
+            only those rows are kept and their score is boosted by +10.
+            - If no matches are found in a group, the group is returned unchanged.
+            - This helps favor rows where important metadata (like a generic name) explicitly appears in the normalized input description.
+
+        """
         def process_group(group):
             # Find rows where the column is not empty and appears in the Description
             mask = group[column_name].notna() & group[column_name].astype(str).str.strip().ne('') & group.apply(
-                lambda row: str(row[column_name]).lower() in str(row['Description']).lower(), axis=1
+                lambda row: str(row[column_name]).lower() in str(row[input_desc_norm]).lower(), axis=1
             )
 
             if mask.any():
@@ -680,7 +760,7 @@ if __name__ == "__main__":
             else:
                 return group
 
-        return df.groupby('input_id', group_keys=False).apply(process_group)
+        return df.groupby(input_id, group_keys=False).apply(process_group)
     
     # First pass: Concentration
     df_final_result_con = filter_and_boost_by_column(df_final_result.copy(), med_concentration)
@@ -693,32 +773,28 @@ if __name__ == "__main__":
     110: 94,
     100: 92
         })
-    print(df_final_result_dosage['input_id'].nunique())
+    print(df_final_result_dosage[input_id].nunique())
 
     
     
-    df_update_price_filter=df_update_price[df_update_price['HIENR']=='X']
-    df_final_result_price=df_final_result_dosage.merge(df_update_price_filter[[product_id_MARA,'KBETR', 'KONWA', 'KMEIN', 'KMEIN_ILS']], on='MATNR', how='left')
-    df_final_result_price.sort_values(by=['input_id', 'score'], ascending=[True, False], inplace=True, ignore_index=True)
-    df_final_result_price['match_num'] = df_final_result_price.groupby('input_id')['MATNR'].transform('count')
-    df_final_result_price.drop(columns=[final_desc, med_concentration,med_dosage,med_dose, med_generic],inplace=True)
-    df_final_result_price.to_excel(os.path.join(input_path, 'result4.xlsx'), index=False)
-
-    print(len(df_final_result_price))
-
+    # df_update_price_filter=df_update_price[df_update_price['HIENR']=='X']
+    # df_final_result_price=df_final_result_dosage.merge(df_update_price_filter[[product_id_MARA,'KBETR', 'KONWA', 'KMEIN', 'KMEIN_ILS']], on='MATNR', how='left')
+    df_final_result_dosage.sort_values(by=[input_id, 'score'], ascending=[True, False], inplace=True, ignore_index=True)
+    df_final_result_dosage['match_num'] = df_final_result_dosage.groupby(input_id)[product_id_MARA].transform('count')
+    df_final_result_dosage.drop(columns=[final_desc,input_desc_norm ,med_concentration,med_dosage,med_dose, med_generic],inplace=True)
 
     #    'desc_matches_above_threshold', 'desc_best_match', 'desc_best_score',
     #    'MFRPN', 'desc_product_match', 'desc_dv_match', 'final_match_product',
     #    'final_match_dv', 'final_match_desc', 'final_match_manufacturer_model',
     #    'final_match_score', 'final_match_source', 'rule_case']
 
-    df_exploded_merge_price_filter=df_exploded_merge_price.drop_duplicates()
-    df_exploded_merge_price_filter.drop(columns=['match'],inplace=True)
-    df_exploded_merge_price_filter.to_excel(os.path.join(input_path, 'result1.xlsx'), index=False)
+    df_exploded_merge_price_filter=df_final_result_dosage.drop_duplicates()
+    df_exploded_merge_price_filter.drop(columns=['match'],inplace=True, errors='ignore')
+    df_exploded_merge_price_filter.to_excel(os.path.join(input_path, file_name+' result3.xlsx'), index=False)
 
     
     
-    a=df_final_up[df_final_up.duplicated(subset='input_id', keep=False)]
+    # a=df_final_up[df_final_up.duplicated(subset='input_id', keep=False)]
 
 
 
