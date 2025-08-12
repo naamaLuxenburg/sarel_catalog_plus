@@ -41,9 +41,9 @@ def read_prodcuts_data(flag_db=False):
         df_med =get_table_AI('Med_data', 'AI')
         df_update_price =get_table_AI(table_name='A501_A703_A503_Updated_prices',db_label='AI')
     else:
-        df_MARA = pd.read_excel(os.path.join(root_path, 'Data/MARA_Products.xlsx'))
-        df_med = pd.read_excel(os.path.join(root_path, 'Data/Med_data.xlsx'))
-        df_update_price = pd.read_excel(os.path.join(root_path, 'Data/A501_A703_A503_Updated_prices.xlsx'))
+        df_MARA = pd.read_excel(os.path.join(root_path, 'Data/MARA_Products.parquet'))
+        df_med = pd.read_excel(os.path.join(root_path, 'Data/Med_data.parquet'))
+        df_update_price = pd.read_excel(os.path.join(root_path, 'Data/A501_A703_A503_Updated_prices.parquet'))
     df_update_price_filter=df_update_price[df_update_price[price_client]=='X'].reset_index(drop=True) #only General Sarel price list
     cols_med= [product_id_MARA,med_generic,med_concentration,med_dosage, med_dose]
     cols_price=[product_id_MARA,price_in_coin, price_coin, price_unit, price_unit_ILS]
