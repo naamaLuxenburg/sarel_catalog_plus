@@ -63,13 +63,20 @@ input_id='input_id'
 
 
 
-
 #constants for db catalog new
 #tables name
 products_desc_table='products_new_desc'
 shortcut_table='shortcut_dict'
 prompt_table='prompt_result'
-#columns
+
+#columns for shortcut_table
+col_shortcut='shortcut'
+col_meaning='meaning'
+col_source='source'
+col_accuracy='accuracy'
+
+
+#dates columns
 inserted_date='inserted_at'
 updated_date='updated_at'
 prompt_date='prompt_date'

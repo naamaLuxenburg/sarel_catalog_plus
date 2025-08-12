@@ -9,6 +9,7 @@ import os
 import sys
 import streamlit as st
 import json
+import tomllib
 
 
 # Add root directory to sys.path safely for both script and interactive environments
@@ -28,23 +29,22 @@ if root_path not in sys.path:
 from app.constants import *
 print(f"✅ constants.py imported successfully {final_desc}")
 
+
 # Set up basic logging configuration
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger()
-prod=True
-try: # whether streamlit is installed and actually running inside a Streamlit app
-    print("🔐 Secrets: ", dict(st.secrets))  # safe for debug (don’t log in prod)
-    STREAMLIT_AVAILABLE = hasattr(st, "secrets") and bool(st.secrets)
-    print(f'used STREAMLIT secret.toml - STREAMLIT_AVAILABLE={STREAMLIT_AVAILABLE}')
-except (ImportError, AttributeError):
-    STREAMLIT_AVAILABLE = False
-    print(f'DB_config Fallback - STREAMLIT_AVAILABLE={STREAMLIT_AVAILABLE}')
+# prod=True
+# try: # whether streamlit is installed and actually running inside a Streamlit app
+#     # print("🔐 Secrets: ", dict(st.secrets))  # safe for debug (don’t log in prod)
+#     STREAMLIT_AVAILABLE = hasattr(st, "secrets") and bool(st.secrets)
+#     print(f'used STREAMLIT secret.toml - STREAMLIT_AVAILABLE={STREAMLIT_AVAILABLE}')
+# except Exception as e:
+#     STREAMLIT_AVAILABLE = False
+#     print(f'⚠️ DB_config fallback - STREAMLIT_AVAILABLE={STREAMLIT_AVAILABLE} | Error: {e}')
 
 
 
-
-
-def load_config(config_file=None):
+def load_config(db_label='AI'):
     """
     Loads the configuration file to get database credentials.
 
@@ -57,38 +57,38 @@ def load_config(config_file=None):
     Returns:
     dict: The configuration values.
     """
-    if STREAMLIT_AVAILABLE and hasattr(st, "secrets"):
+    try:
         # Load from Streamlit secrets
         return {
             "DB_AI_USER": st.secrets["DB_AI_USER"],
             "DB_AI_PASSWORD": st.secrets["DB_AI_PASSWORD"],
             "DB_AI_SERVER_PROD": st.secrets["DB_AI_SERVER_PROD"],
             "DB_AI_DATABASE_PROD": st.secrets.get("DB_AI_DATABASE_PROD", "default_db_name"),
-            "DB_CATALOG_PLUS_DATABASE_PROD": st.secrets.get("DB_CATALOG_PLUS_DATABASE_PROD", "default_db_name")
+            "DB_CATALOG_PLUS_DATABASE_PROD": st.secrets.get(f"DB_{db_label}_DATABASE_PROD", "default_db_name")
 
         }
     # Fallback to JSON file
-    if config_file is None:
-        try:
-            # Normal script mode
-            base_path = os.path.dirname(__file__)
-        except NameError:
-            # Interactive mode fallback
-            base_path = os.getcwd()
+    except Exception as e:
+        print(f"🔐 Using local secrets file for DB configuration, the path: {root_path}") 
+        secrets_path = os.path.join(root_path, ".streamlit", "secrets.toml")
+        if not os.path.exists(secrets_path):
+            raise FileNotFoundError(f"Secrets file not found at {secrets_path}")
+        with open(secrets_path, "rb") as f:
+            secrets = tomllib.load(f)
+        return {
+            "DB_AI_USER": secrets.get("DB_AI_USER"),
+            "DB_AI_PASSWORD": secrets.get("DB_AI_PASSWORD"),
+            "DB_AI_SERVER_PROD": secrets.get("DB_AI_SERVER_PROD"),
+            "DB_AI_DATABASE_PROD": secrets.get("DB_AI_DATABASE_PROD", "default_db_name"),
+            "DB_CATALOG_PLUS_DATABASE_PROD": secrets.get(f"DB_{db_label}_DATABASE_PROD", "default_db_name")
+        }
 
-        print(f'used DB_config.json')
-        config_file = os.path.join(base_path, "DB_config.json")
 
-    with open(config_file, 'r') as f:
-        return json.load(f)
-
-
-def get_connection_string(prod, db_label='SAP',driver='ODBC Driver 18 for SQL Server',config_file=None):
+def get_connection_string(db_label='AI',driver='ODBC Driver 18 for SQL Server'):
     """
     Generates a connection string to connect to the SQL Server database using config from a JSON file.
 
     Args:
-    prod (bool): If False, connects to the QA environment; if True, connects to the production environment.
     db_label (str): A label to differentiate between multiple DBs (e.g., 'AI').
     driver (str): The ODBC driver to use for the connection. Default is 'ODBC Driver 18 for SQL Server'.
     config_file (str): Path to the configuration JSON file (default is 'config.json').
@@ -96,17 +96,12 @@ def get_connection_string(prod, db_label='SAP',driver='ODBC Driver 18 for SQL Se
     Returns:
     str: The connection string to connect to the database.
     """
-    config = load_config(config_file)
+    config = load_config(db_label)
 
-    if not prod:
-        server = config.get(f'DB_{db_label}_SERVER_QA', 'default_server')
-        database = config.get(f'DB_{db_label}_DATABASE_QA', 'default_db')
-    else:
-        server = config.get(f'DB_{db_label}_SERVER_PROD', 'default_server')
-        database = config.get(f'DB_{db_label}_DATABASE_PROD', 'default_db')
-
-    username = config.get(f'DB_{db_label}_USER', 'default_user')
-    password = config.get(f'DB_{db_label}_PASSWORD', 'default_password')
+    server = config.get("DB_AI_SERVER_PROD")
+    database =config.get(f"DB_{db_label}_DATABASE_PROD")
+    username = config.get("DB_AI_USER")
+    password = config.get("DB_AI_PASSWORD")
 
     # connection_string = f'mssql+pyodbc://{username}:{password}@{server}/{database}?driver={driver}&TrustServerCertificate=yes'
     connection_string = f"mssql+pytds://{username}:{password}@{server}/{database}"
@@ -205,7 +200,7 @@ def inserted_column(df, flag_insert, flag_update, flag_prompt=False):
         df[prompt_date] = datetime.datetime.now().replace(microsecond=0)
     return df
 
-def get_query_AI(table_name, ls_field,ls_year):
+def get_query_AI(table_name,db_label, ls_field,ls_year):
     if len(ls_field)==0:
         if table_name.startswith('CE1SARL_Invoice'):
             str_field = (
@@ -246,11 +241,14 @@ def get_query_AI(table_name, ls_field,ls_year):
         return queries[table_name]
 
     # 🆗 Default fallback if table not predefined
-    default_query = f"SELECT {str_field} FROM [AIDB].[dbo].[{table_name}]"
+    if db_label=='AI':
+        default_query = f"SELECT {str_field} FROM [AIDB].[dbo].[{table_name}]"
+    else:
+        default_query = f"SELECT {str_field} FROM [CATALOG_PLUS].[dbo].[{table_name}]"
     return default_query
 
 
-def get_table_AI(table_name,db_label, ls_field=[],ls_year=[]):
+def get_table_AI(table_name,db_label='AI', ls_field=[],ls_year=[]):
     """
     The function get the table data from the AIDB.
     The table_name give as th query
@@ -258,9 +256,9 @@ def get_table_AI(table_name,db_label, ls_field=[],ls_year=[]):
     :param table_name:
     :return:
     """
-    conn_str = get_connection_string(prod=prod, db_label=db_label)
+    conn_str = get_connection_string(db_label=db_label)
     print(f"conn_str={conn_str}")
-    query = get_query_AI(table_name,ls_field, ls_year)
+    query = get_query_AI(table_name,db_label,ls_field, ls_year)
     if query is None or str(query).startswith("Error"):
         print(f"[ERROR] Failed to get query: {query}")
         return None  # or raise an exception if preferred
@@ -439,7 +437,7 @@ def load_dataframe_to_table(df, db_label, table_name, mode='append', auto_create
         - 'replace': Deletes all existing rows from the table before inserting the new data.
         auto_create_if_missing (bool): If True, will create the table if it doesn't exist.
     """
-    connection_string = get_connection_string(prod=prod, db_label=db_label)
+    connection_string = get_connection_string(db_label=db_label)
     table_exists_flag = table_exists(table_name, connection_string)
 
     if mode == 'create':
@@ -480,5 +478,7 @@ def load_dataframe_to_table(df, db_label, table_name, mode='append', auto_create
 
 
 if __name__ == "__main__":
-    #print(load_config())
-    df_MARA =get_table_AI('MARA_Products', 'AI')
+    print(load_config(db_label='AI'))
+    conn_str = get_connection_string(db_label='CATALOG_PLUS')
+
+    df_MARA =get_table_AI(table_name='MARA_Products', db_label='AI')

@@ -1,5 +1,4 @@
 #region import libraries
-
 import datetime
 import os
 import sys
@@ -17,6 +16,8 @@ import openai
 from openai import OpenAI
 import time
 import json
+import ast
+
 from dotenv import load_dotenv
 
 
@@ -38,6 +39,7 @@ if root_path not in sys.path:
 # from database.db_AI_utils import load_dataframe_to_table, inserted_column, replace_empty_with_null_safe,get_table_AI
 from database.db_AI_utils import *
 from app.constants import *
+from app.prompts import *
 load_dotenv()
 
 
@@ -393,78 +395,6 @@ def is_number(token):
     return bool(re.fullmatch(r'-?\d+(\.\d+)?', token))
 
 
-# def replace_shortcuts(text, shortcut_dict):
-#     """
-#     Replace known shortcuts in a text with their full word equivalents,
-#     and return both the updated text and a list of shortcuts that were replaced.
-
-#     Skips replacement if the shortcut appears inside known abbreviations
-#     or adjacent to ':' or '/' characters.
-
-#     Parameters:
-#         text (str): Input description.
-#         shortcut_dict (dict): Shortcut → full word.
-
-#     Returns:
-#         Tuple[str, List[str]]: (updated text, list of shortcuts that were replaced)
-#     """
-
-#     if not isinstance(text, str):
-#         return text  # Skip non-string values
-#     # Convert text to lowercase for consistent matching
-#     text = text.lower()
-#     used_shortcuts = []
-
-
-#     # # Step 1: Detect protected abbreviations like "F.A.M.E"
-#     # abbreviation_pattern = re.compile(r'\b(?:[A-Za-z]{1,2}\.){1,}[A-Za-z]{1,2}\b')
-
-#     # protected_spans = [
-#     #     (match.start(), match.end(), match.group())  # <-- add matched abbreviation string
-#     #     for match in abbreviation_pattern.finditer(text)
-#     # ]
-  
-#     # ------------------------------------------------------------------------------
-#     # STEP 2: Replace shortcuts using word-boundary regex, unless protected
-#     # ------------------------------------------------------------------------------
-#     for shortcut, full_word in shortcut_dict.items():
-#         # Match the shortcut only if it's a whole word (e.g., "w." not in "f.cath")
-#         if "." in shortcut:
-#             pattern = re.compile(r'(?<!\w){}(?!\w)'.format(re.escape(shortcut)), flags=re.IGNORECASE)
-#         else:
-#             pattern = re.compile(r'\b{}\b'.format(re.escape(shortcut)), flags=re.IGNORECASE)
-#         found = False  # Will flip to True if any replacement occurs
-        
-#         def safe_replace(match):
-#             nonlocal found
-#             start = match.start()
-#             end = match.end()
-#             match_text = match.group()
-
-#             # # only skip if the match is part of a longer abbreviation,
-#             # # NOT if the entire abbreviation is the shortcut itself (like 'i.v')
-#             # for s, e, abbr in protected_spans:
-#             #     if s <= start < e and abbr.lower() != shortcut.lower():
-#             #         return match.group()  # skip replacement
-
-#             # Skip if adjacent to colon or weird symbol like O:h or w/o
-#             before = text[start - 1] if start > 0 else ''
-#             after = text[end] if end < len(text) else ''
-#             if before in ":/" or after in ":/":
-#                 return match.group()
-            
-#             found = True
-#             return " " + full_word + " "  # ✅ Add space before and after
-
-
-#         text = pattern.sub(safe_replace, text)
-#         if found:
-#             used_shortcuts.append(shortcut)
-
-#         text_final = clean_space_and_special_chars(text)
-
-#     return text_final,used_shortcuts
-
 def replace_shortcuts_token_based(text, shortcut_dict,blocked_shortcuts=None):
     """
     Replace only full-word shortcuts using smart token-based scanning.
@@ -536,44 +466,8 @@ def build_user_message(batch):
     :param batch: DataFrame containing shortcuts and their example descriptions.
     :return: JSON Formatted message string for OpenAI API.
     """
-    message = """
-You are given a list of shortcuts with example descriptions. For each shortcut:
-1. Interpret its most likely full word.
-2. Indicate which example descriptions support your interpretation (by their number).
-3. Give a confidence score from 0 to 1.
-4. If other meanings are also valid for different descriptions, list each of them with:
-* The alternative meaning (e.g., 'dispense', 'display')
-* The matching description indices
-* A separate confidence score
-5. Ensure that all the example descriptions are covered by either the main meaning or an alternative.
-6. add a short reasoning field explaining your interpretation and logic.
 
-Use this JSON format for each:
-{
-  "input_shortcut": "disp",
-  "gpt_meaning": "disposable",
-  "gpt_desc_match": [0, 1, 2],
-  "gpt_accuracy": 0.97,
-  "gpt_meaning_alternatives": [
-    {
-      "meaning": "display",
-      "desc_match": [3],
-      "accuracy": 0.65
-    },
-    {
-      "meaning": "dispense",
-      "desc_match": [4, 5],
-      "accuracy": 0.6
-    }
-  ],
-  "reasoning": "Descriptions 0–2 refer to gloves and syringes, which are typically 'disposable'. Index 3 mentions screen-related terms, suggesting 'display'. Index 4 and 5 mention drug delivery systems, suggesting 'dispense' as another possible meaning."
-}
-
-
-Only include *_other fields if truly relevant.
-
-Examples:
-"""
+    message = user_message_abbreviations
     for _, row in batch.iterrows():
         shortcut = row['token']
         examples = row['examples']
@@ -596,7 +490,7 @@ def call_openai(system_message, user_message, max_token=2000, retries=3, delay=5
     for attempt in range(retries):
         try:
             response = client.chat.completions.create(
-                model="gpt-4",
+                model=model_name_abbreviations,
                 messages=[
                     {"role": "system", "content": system_message},
                     {"role": "user", "content": user_message}
@@ -629,13 +523,14 @@ def flatten_alternatives(row, max_alternatives=5):
         
     return pd.Series(alt_data)
 
-def create_df_from_prompt_results(results):
-    """
+def create_df_from_prompt_results(results, df_input):
+    f"""
     Create a DataFrame from the results of OpenAI API calls.
     Each result should be a JSON string representing a list of dictionaries.
     If a result is not a valid JSON, it will be skipped and an error message will be printed.
     :param results: List of JSON strings returned by OpenAI API.
     :return: DataFrame containing the parsed results.
+    columns: {input_shortcut},{gpt_meaning},{gpt_desc_match},{gpt_accuracy},{gpt_meaning_alternatives}, {reasoning}
     """
     parsed_rows = []
     for res_text in results:
@@ -653,8 +548,10 @@ def create_df_from_prompt_results(results):
         except json.JSONDecodeError as e:
             print("Failed to parse:", res_text)
             print("Error:", e)
+    df_JSON=pd.DataFrame(parsed_rows)
+    df_result = df_JSON.merge(df_input[[input_shortcut, 'examples']], on=input_shortcut, how='left')
 
-    return pd.DataFrame(parsed_rows)
+    return df_result
 
 def count_len_indices(indices):
     """
@@ -777,7 +674,7 @@ if __name__ == "__main__":
     years=np.arange(2023,current_year+1)
 
     print("Reading tables from DBAI...")
-    df_CE1SARL = get_table_AI('CE1SARL_Invoice_all', [], years)
+    df_CE1SARL = get_table_AI('CE1SARL_Invoice_all','AI', [], years)
     df_MARA =get_table_AI('MARA_Products')
     df_T023T=get_table_AI('T023T_MATKL_description')
     df_TSPAT=get_table_AI('TSPAT_dv_description')
@@ -907,17 +804,9 @@ if __name__ == "__main__":
     new_openAI_key=os.getenv("new_openAI_key")
     client = OpenAI(api_key=new_openAI_key)  # Replace with your ke
 
-    # System prompt for chain-of-thought guidance
-    system_message = """
-    You are a professional medical equipment analyst.
-    You specialize in interpreting abbreviations found in medical equipment and pharmaceutical descriptions.
-    Always return your analysis as valid JSON. Include your best guess, supporting indices, and confidence level.
-    """
-
-
+   
     # Run in batches
     batch_size = 10
-    # result_20=results
     results = []
 
     for start in range(0, len(df_vocab_shourtcuts), batch_size):
@@ -925,18 +814,96 @@ if __name__ == "__main__":
         batch = df_vocab_shourtcuts.iloc[start:start + batch_size]
         user_msg = build_user_message(batch)
         # Print the entire user_msg without truncation
-        response = call_openai(system_message, user_msg)
+        response = call_openai(system_message_abbreviations, user_msg)
         if response:
             results.append(response)
         else:
             print(f"Failed to process batch starting at {start}")
 
-    # Create DataFrame from the results
-    df_result = create_df_from_prompt_results(results)
+    # Create DataFrame from the JSON results (as is)+examples input
+    df_result = create_df_from_prompt_results(results,df_vocab_shourtcuts)
+
+    # df_result1 = pd.read_excel('temp_result/run1/df_prompt_result_org_1007.xlsx')
+    # df_result2 = pd.read_excel('temp_result/run1/df_prompt_merge_160.xlsx')
+    
+    # df_result = df_result1.merge(df_result2[['input_shortcut', 'examples']], on='input_shortcut', how='left')
+    
+    
+
+    def parse_list_string_from_prompt(val):
+        # Function to safely parse JSON strings into Python objects
+        if pd.isna(val) or str(val).strip() == "" or str(val).strip() == "[]":
+            return []
+        try:
+            # Safely evaluate the string into a Python object
+            return ast.literal_eval(val)
+        except Exception:
+            return []
+    
+    df_result["gpt_meaning_alternatives_fix"] = df_result["gpt_meaning_alternatives"].apply(parse_list_string_from_prompt)
+    df_result["gpt_desc_match_fix"] = df_result["gpt_desc_match"].apply(parse_list_string_from_prompt)
+    df_result["examples_fix"] = df_result["examples"].apply(parse_list_string_from_prompt)
+    df_result=df_result.rename(columns={"gpt_meaning_alternatives": "gpt_meaning_alternatives_str","gpt_meaning_alternatives_fix": "gpt_meaning_alternatives"})
+    df_result=df_result.rename(columns={"gpt_desc_match": "gpt_desc_match_str","gpt_desc_match_fix": "gpt_desc_match"})
+    df_result=df_result.rename(columns={"examples": "examples_str","examples_fix": "input_examples"})
+
+    df_to_db=df_result[['input_shortcut', 'input_examples','gpt_meaning', 'gpt_desc_match', 'gpt_accuracy',
+       'gpt_meaning_alternatives','reasoning']]
+    df_to_db[prompt_date]=pd.to_datetime("2025-07-10")
+    df_to_db[inserted_date]=datetime.datetime.today().strftime('%Y-%m-%d %H:%M:%S')
+    
+    def to_json_for_sql(v):
+        # treat pandas NaN/None as SQL NULL
+        # if pd.isna(v):
+        #     return None
+        # lists/dicts -> JSON string
+        if isinstance(v, (list, dict)):
+            return json.dumps(v, ensure_ascii=False)
+        # already a string (maybe JSON) -> keep as-is
+        if isinstance(v, str):
+            return v
+        # fallback: jsonify other scalar types (int/float -> "5", etc.)
+        try:
+            return json.dumps(v, ensure_ascii=False)
+        except Exception:
+            return json.dumps(str(v), ensure_ascii=False)
+
+    cols_to_json = ['input_examples','gpt_desc_match', 'gpt_meaning_alternatives']
+    for c in cols_to_json:
+        print(df_to_db[c].map(type).unique())
+        df_to_db[c] = df_to_db[c].apply(to_json_for_sql)
+
+
+    load_dataframe_to_table(df=df_to_db, db_label='CATALOG_PLUS',table_name=prompt_table, mode='append')
+    df_result_sql =get_table_AI(table_name=prompt_table, db_label='CATALOG_PLUS')
+
+
+    def parse_json_or_fallback(s):
+        if s is None:
+            return None
+        s = s.strip()
+        # Quick test: if it looks like JSON array/object, try to load
+        if s.startswith('[') or s.startswith('{'):
+            try:
+                return json.loads(s)
+            except Exception:
+                pass
+        # fallback: maybe it's a comma-separated string (legacy); return list of tokens
+        if ',' in s:
+            return [t.strip() for t in s.split(',') if t.strip() != '']
+        # otherwise return the raw string
+        return s
+
+    for c in cols_to_json:
+        if c in df_result_sql.columns:
+            df_result_sql[c] = df_result_sql[c].apply(parse_json_or_fallback)
+            print(df_result_sql[c].map(type).unique())
+
 
 
     # Apply flattening
     df_flat_alts = df_result.apply(flatten_alternatives, axis=1)
+
 
     # Explicitly reorder columns by meaning1, match1, accuracy1, etc.
     ordered_cols = []
@@ -988,7 +955,7 @@ if __name__ == "__main__":
     # Save the final DataFrame to Excel
     df_prompt_merge.to_excel('df_prompt_merge_160.xlsx', index=False)
 
-    # df_prompt_merge=pd.read_excel('temp_result/df_prompt_merge_160.xlsx')
+    # df_prompt_merge=pd.read_excel('temp_result/run1/df_prompt_merge_160.xlsx')
     # i_max=3
     #check if there are any meanings that are the same
     df_normalized_meanings=create_normalized_df(df_prompt_merge, i_max)
@@ -1012,13 +979,28 @@ if __name__ == "__main__":
 
     #df_final.to_excel('df_final_voacb_prompt_manual.xlsx', index=False)
     df_final=pd.read_excel('temp_result/run1/df_final_voacb_prompt_manual.xlsx')
+    df_final.dropna(subset=[col_shortcut, col_meaning], inplace=True)  # Ensure no NaN values in shortcuts or meanings
+    
+    #insert to the DB
+    # col_shortcut='shortcut'
+    # col_meaning='meaning'
+    # col_source='source'
+    # col_accuracy='accuracy'
 
-    df_shortcut_stay = df_vocab[
-        ~df_vocab['token'].str.lower().isin(df_final['shortcut'].str.lower())
-    ].reset_index(drop=True)[['token']]
-    df_shortcut_stay.rename(columns={'token': 'shortcut'}, inplace=True)
-    df_shortcut_stay['meaning'] = df_shortcut_stay['shortcut']  # Use the shortcut itself as meaning
-    df_shortcut_stay['source'] = 'still shortcut'  # Use the shortcut itself as meaning
+    df_shortcut_table=df_final[[col_shortcut, col_meaning, col_source, col_accuracy]]
+    df_shortcut_table[inserted_date]=datetime.datetime.today().strftime('%Y-%m-%d %H:%M:%S')
+    df_shortcut_table[updated_date]=datetime.datetime.today().strftime('%Y-%m-%d %H:%M:%S')
+    load_dataframe_to_table(df_shortcut_table, db_label='CATALOG_PLUS', table_name=shortcut_table, mode='append')
+
+
+
+
+    # df_shortcut_stay = df_vocab[
+    #     ~df_vocab['token'].str.lower().isin(df_final['shortcut'].str.lower())
+    # ].reset_index(drop=True)[['token']]
+    # df_shortcut_stay.rename(columns={'token': 'shortcut'}, inplace=True)
+    # df_shortcut_stay['meaning'] = df_shortcut_stay['shortcut']  # Use the shortcut itself as meaning
+    # df_shortcut_stay['source'] = 'still shortcut'  # Use the shortcut itself as meaning
 
 
     #endregion
@@ -1033,22 +1015,23 @@ if __name__ == "__main__":
                 .set_index("shortcut")["meaning"]
                 .to_dict()
     )
-    shortcut_block_dict = (
-        df_shortcut_stay.dropna(subset=["shortcut", "meaning"])
-                .assign(shortcut=lambda df: df["shortcut"].str.lower(),
-                        meaning=lambda df: df["meaning"].str.lower())
-                .set_index("shortcut")["meaning"]
-                .to_dict()
-    )
+    # shortcut_block_dict = (
+    #     df_shortcut_stay.dropna(subset=["shortcut", "meaning"])
+    #             .assign(shortcut=lambda df: df["shortcut"].str.lower(),
+    #                     meaning=lambda df: df["meaning"].str.lower())
+    #             .set_index("shortcut")["meaning"]
+    #             .to_dict()
+    # )
 
 
     # Step 5.2: Function to replace all shortcuts in a description
     #df_filter.drop(columns='desc_fix', inplace=True)  # Remove existing 'desc_fix' column if it exists
 
-    desc = "f.a.m.e MIX GLC-50 100MG NEAT"
-    desc="syring w.o.blood"
-    new_text, used = replace_shortcuts_token_based(desc.lower(), shortcut_dict,shortcut_block_dict)
-    print(new_text, used)
+    ##diffrent tries.
+    # desc = "f.a.m.e MIX GLC-50 100MG NEAT"
+    # desc="syring w.o.blood"
+    # new_text, used = replace_shortcuts_token_based(desc.lower(), shortcut_dict,shortcut_block_dict)
+    # print(new_text, used)
 
     df_filter[['desc_fix', 'shortcuts_used']] = df_filter[product_desc_update].apply(
         lambda x: pd.Series(replace_shortcuts_token_based(x, shortcut_dict))

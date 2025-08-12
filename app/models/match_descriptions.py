@@ -7,6 +7,10 @@ import importlib
 import re
 
 
+
+
+
+
 # Add root directory to sys.path safely for both script and interactive environments
 try:
     root_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'))
@@ -20,7 +24,7 @@ if root_path not in sys.path:
     print(f"Added root path to sys.path: {root_path}")
 
 # Now safely import
-from app.models.process_descriptions import contains_hebrew
+from app.models.process_descriptions import contains_hebrew,get_faiss_neighbors
 from app.constants import *
 print(f"✅ constants.py imported successfully {final_desc}")
 from database.db_AI_utils import *
@@ -28,13 +32,18 @@ from database.db_AI_utils import *
 # importlib.reload(db_utils)
 
 
-def read_prodcuts_data():
+def read_prodcuts_data(flag_db=False):
     """
     Reads all the prodcuts exist data returns a DataFrame.
     """
-    df_MARA =get_table_AI('MARA_Products', 'AI')
-    df_med =get_table_AI('Med_data', 'AI')
-    df_update_price =get_table_AI(table_name='A501_A703_A503_Updated_prices',db_label='AI')
+    if flag_db:
+        df_MARA =get_table_AI('MARA_Products', 'AI')
+        df_med =get_table_AI('Med_data', 'AI')
+        df_update_price =get_table_AI(table_name='A501_A703_A503_Updated_prices',db_label='AI')
+    else:
+        df_MARA = pd.read_excel(os.path.join(root_path, 'Data/MARA_Products.xlsx'))
+        df_med = pd.read_excel(os.path.join(root_path, 'Data/Med_data.xlsx'))
+        df_update_price = pd.read_excel(os.path.join(root_path, 'Data/A501_A703_A503_Updated_prices.xlsx'))
     df_update_price_filter=df_update_price[df_update_price[price_client]=='X'].reset_index(drop=True) #only General Sarel price list
     cols_med= [product_id_MARA,med_generic,med_concentration,med_dosage, med_dose]
     cols_price=[product_id_MARA,price_in_coin, price_coin, price_unit, price_unit_ILS]
@@ -449,9 +458,15 @@ def create_match_product(df_input):
 
 
 
-
-
 if __name__ == "__main__":
+    # df_MARA =get_table_AI('MARA_Products', 'AI')
+    # df_med =get_table_AI('Med_data', 'AI')
+    # df_update_price =get_table_AI(table_name='A501_A703_A503_Updated_prices',db_label='AI')
+    # df_MARA.to_parquet(os.path.join(root_path, 'Data/MARA_Products.parquet'), index=False)
+    # df_med.to_parquet(os.path.join(root_path, 'Data/Med_data.parquet'), index=False)
+    # df_update_price.to_parquet(os.path.join(root_path, 'Data/A501_A703_A503_Updated_prices.parquet'), index=False)
+
+
     input_path = os.path.join(root_path, 'input')
     #file_name='Medical Commodities IMC - input'
     file_name='Sarel_TBL JER 2025 01 EN Health standard list - input'
@@ -802,143 +817,147 @@ if __name__ == "__main__":
     #endregion
 
 
+    #region embed descriptions and find neighbors
+
+    import torch
+    from transformers import AutoTokenizer, AutoModel
+    from sklearn.preprocessing import normalize
+    from collections import Counter
+
+
+    #🔁 Step 1: Embed full descriptions
+    def embed_texts(texts, model, tokenizer, device, max_length=64):
+        """
+        Embed a list of full text descriptions using a BERT model.
+        """
+        model.eval()
+        encoded = tokenizer(
+            texts,
+            padding=True,
+            truncation=True,
+            max_length=max_length,
+            return_tensors="pt"
+        ).to(device)
+
+        with torch.no_grad():
+            outputs = model(**encoded)
+        
+        embeddings = outputs.last_hidden_state
+        attention_mask = encoded["attention_mask"].unsqueeze(-1)
+        summed = torch.sum(embeddings * attention_mask, dim=1)
+        counts = torch.clamp(attention_mask.sum(dim=1), min=1e-9)
+        mean_pooled = summed / counts
+        return mean_pooled.cpu().numpy()
+
+
+    #🧰 Step 3: Full pipeline for model + description clustering
+    def compute_description_neighbors(df, text_col, model_name, model_label, top_k=5, threshold=0.9,df_ref=None,text_col_ref=None):
+        """
+        Compute semantic neighbors for product descriptions using a specified transformer model.
+        This function encodes a text column using a transformer-based language model, then uses FAISS to find:
+        - The top-K most similar descriptions
+        - All descriptions above a similarity threshold
+
+        These results are saved to two new columns:
+        - 'top_desc_<model_label>': list of top-K closest descriptions
+        - 'th_desc_<model_label>': list of descriptions with similarity above the threshold
+        Args:
+            df (pd.DataFrame): DataFrame with a text column to embed
+            text_col (str): Name of the column containing text descriptions
+            model_name (str): Hugging Face model name
+            model_label (str): Label to differentiate model outputs in column names
+            top_k (int): Number of top neighbors to retrieve (default is 5).
+            threshold (float): Similarity threshold for neighbors (default is 0.9).
+            df_ref (pd.DataFrame, optional): Reference DataFrame to compare against.
+            text_col_ref (str, optional): Text column name in df_ref.
+        
+        Returns:
+            pd.DataFrame: Original df with two new columns:
+            - top_desc_<model_label>: list of top-K closest descriptions
+            - th_desc_<model_label>: list of descriptions above the threshold
+        """
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model = AutoModel.from_pretrained(model_name).to(device)
+        model.eval()
+
+        # Embed df texts
+        texts = df[text_col].fillna("").tolist()
+        vectors = []
+        batch_size = 64 # Batch process to avoid overload
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i+batch_size]
+            vecs = embed_texts(batch, model, tokenizer, device)
+            vectors.append(vecs)
+
+        all_vectors = np.vstack(vectors)
+        vectors_norm = normalize(all_vectors, axis=1)
+
+        # If no reference df provided, compare df to itself (reuse vectors_norm)
+        if df_ref is None or text_col_ref is None:
+            ref_vectors_norm = vectors_norm
+            ref_texts = texts
+        else:
+            # Embed reference df texts separately
+            ref_texts = df_ref[text_col_ref].fillna("").tolist()
+            ref_vectors = []
+            for i in range(0, len(ref_texts), batch_size):
+                batch = ref_texts[i : i + batch_size]
+                vecs = embed_texts(batch, model, tokenizer, device)
+                ref_vectors.append(vecs)
+            ref_all_vectors = np.vstack(ref_vectors)
+            ref_vectors_norm = normalize(ref_all_vectors, axis=1)
+
+        # Save top-K and threshold neighbors
+        # top_neighbors = get_faiss_neighbors(vectors_norm, texts, top_k=top_k)
+        # th_neighbors = get_faiss_neighbors(vectors_norm, texts, threshold=threshold)
+        top_neighbors = get_faiss_neighbors(ref_vectors_norm, ref_texts, top_k=top_k)
+        th_neighbors = get_faiss_neighbors(ref_vectors_norm, ref_texts, threshold=threshold)
+
+
+        df[f'top_desc_{model_label}'] = top_neighbors
+        df[f'th_desc_{model_label}'] = th_neighbors
+        return df
+
+    print(df_products.columns)
+    # Run for Bio_ClinicalBERT
+    df_filter_model1=compute_description_neighbors(
+        df_products[[product_id_MARA,product_desc,final_desc]].copy(),
+        text_col=final_desc,
+        model_name="emilyalsentzer/Bio_ClinicalBERT",
+        model_label="bio"
+    )
+
+    df_filter_model1.insert(
+        df_filter_model1.columns.get_loc('top_desc_bio') + 1,
+        'top_desc_bio_tokens',
+        df_filter_model1['top_desc_bio'].apply(lambda desc_list: tokenize_text(" ".join(desc_list)) if isinstance(desc_list, list) else [])
+    )
+
+
+    # Run for ClinicalBERT
+    df_filter_model_2=compute_description_neighbors(
+        df_filter[[product_id_MARA,product_desc, product_desc_update,rules_desc]].copy(),
+        text_col=rules_desc,
+        model_name="medicalai/ClinicalBERT",
+        model_label="med"
+    )
+    df_filter_model_2.insert(
+        df_filter_model_2.columns.get_loc('th_desc_med') + 1,
+        'th_desc_med_tokens',
+        df_filter_model_2['th_desc_med'].apply(lambda desc_list: tokenize_text(" ".join(desc_list)) if isinstance(desc_list, list) else [])
+    )
 
 
 
+    df_filter_model_2.insert(
+        df_filter_model_2.columns.get_loc('th_desc_med') + 2,
+        'th_desc_med_token_freq',
+        df_filter_model_2['th_desc_med'].apply(
+            lambda desc_list: dict(Counter(tokenize_text(" ".join(desc_list)))) 
+            if isinstance(desc_list, list) else {}
+        )
+    )
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# #region embed descriptions and find neighbors
-
-# #🔁 Step 1: Embed full descriptions
-# def embed_texts(texts, model, tokenizer, device, max_length=64):
-#     """
-#     Embed a list of full text descriptions using a BERT model.
-#     """
-#     model.eval()
-#     encoded = tokenizer(
-#         texts,
-#         padding=True,
-#         truncation=True,
-#         max_length=max_length,
-#         return_tensors="pt"
-#     ).to(device)
-
-#     with torch.no_grad():
-#         outputs = model(**encoded)
-    
-#     embeddings = outputs.last_hidden_state
-#     attention_mask = encoded["attention_mask"].unsqueeze(-1)
-#     summed = torch.sum(embeddings * attention_mask, dim=1)
-#     counts = torch.clamp(attention_mask.sum(dim=1), min=1e-9)
-#     mean_pooled = summed / counts
-#     return mean_pooled.cpu().numpy()
-
-
-# #🧰 Step 3: Full pipeline for model + description clustering
-# def compute_description_neighbors(df, text_col, model_name, model_label, top_k=5, threshold=0.9):
-#     """
-#     Compute semantic neighbors for product descriptions using a specified transformer model.
-#     This function encodes a text column using a transformer-based language model, then uses FAISS to find:
-#     - The top-K most similar descriptions
-#     - All descriptions above a similarity threshold
-
-#     These results are saved to two new columns:
-#     - 'top_desc_<model_label>': list of top-K closest descriptions
-#     - 'th_desc_<model_label>': list of descriptions with similarity above the threshold
-#     Args:
-#         df (pd.DataFrame): DataFrame with a text column to embed
-#         text_col (str): Name of the column containing text descriptions
-#         model_name (str): Hugging Face model name
-#         model_label (str): Label to differentiate model outputs in column names
-#         top_k (int): Number of top neighbors to retrieve (default is 5).
-#         threshold (float): Similarity threshold for neighbors (default is 0.9).
-#         Returns:
-#         pd.DataFrame: Original DataFrame with new columns for neighbors
-#     """
-#     tokenizer = AutoTokenizer.from_pretrained(model_name)
-#     model = AutoModel.from_pretrained(model_name).to(device)
-#     model.eval()
-
-#     texts = df[text_col].fillna("").tolist()
-#     vectors = []
-
-#     # Batch process to avoid GPU overload
-#     batch_size = 64
-#     for i in range(0, len(texts), batch_size):
-#         batch = texts[i:i+batch_size]
-#         vecs = embed_texts(batch, model, tokenizer, device)
-#         vectors.append(vecs)
-
-#     all_vectors = np.vstack(vectors)
-#     vectors_norm = normalize(all_vectors, axis=1)
-
-#     # Save top-K and threshold neighbors
-#     top_neighbors = get_faiss_neighbors(vectors_norm, texts, top_k=top_k)
-#     th_neighbors = get_faiss_neighbors(vectors_norm, texts, threshold=threshold)
-
-#     df[f'top_desc_{model_label}'] = top_neighbors
-#     df[f'th_desc_{model_label}'] = th_neighbors
-#     return df
-
-
-# # Run for Bio_ClinicalBERT
-# df_filter_model1=compute_description_neighbors(
-#     df_filter[[product_id_MARA,product_desc, product_desc_update,manufacturer_model,unit_code_number]].copy(),
-#     text_col=product_desc_update,
-#     model_name="emilyalsentzer/Bio_ClinicalBERT",
-#     model_label="bio"
-# )
-
-# df_filter_model1.insert(
-#     df_filter_model1.columns.get_loc('top_desc_bio') + 1,
-#     'top_desc_bio_tokens',
-#     df_filter_model1['top_desc_bio'].apply(lambda desc_list: tokenize_text(" ".join(desc_list)) if isinstance(desc_list, list) else [])
-# )
-
-
-# # Run for ClinicalBERT
-# df_filter_model_2=compute_description_neighbors(
-#     df_filter[[product_id_MARA,product_desc, product_desc_update,rules_desc]].copy(),
-#     text_col=rules_desc,
-#     model_name="medicalai/ClinicalBERT",
-#     model_label="med"
-# )
-# df_filter_model_2.insert(
-#     df_filter_model_2.columns.get_loc('th_desc_med') + 1,
-#     'th_desc_med_tokens',
-#     df_filter_model_2['th_desc_med'].apply(lambda desc_list: tokenize_text(" ".join(desc_list)) if isinstance(desc_list, list) else [])
-# )
-
-# from collections import Counter
-# import sys
-
-# df_filter_model_2.insert(
-#     df_filter_model_2.columns.get_loc('th_desc_med') + 2,
-#     'th_desc_med_token_freq',
-#     df_filter_model_2['th_desc_med'].apply(
-#         lambda desc_list: dict(Counter(tokenize_text(" ".join(desc_list)))) 
-#         if isinstance(desc_list, list) else {}
-#     )
-# )
-
-# #endregion
+    #endregion
 
