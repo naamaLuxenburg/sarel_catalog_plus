@@ -13,17 +13,17 @@ import tomllib
 
 
 # Add root directory to sys.path safely for both script and interactive environments
-try:
-    root_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../'))
-    print(f"Root path set to: {root_path}")
+# try:
+#     root_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../'))
+#     print(f"Root path set to: {root_path}")
 
-except NameError:
-    # __file__ is not defined in Interactive Window
-    root_path = os.path.abspath(os.path.join(os.getcwd(), '../'))
+# except NameError:
+#     # __file__ is not defined in Interactive Window
+#     root_path = os.path.abspath(os.path.join(os.getcwd(), '../'))
 
-if root_path not in sys.path:
-    sys.path.append(root_path)
-    print(f"Added root path to sys.path: {root_path}")
+# if root_path not in sys.path:
+#     sys.path.append(root_path)
+#     print(f"Added root path to sys.path: {root_path}")
 
 #from database.db_SAP_utils import load_config, get_connection_string,connect_to_db_with_query
 from app.constants import *

@@ -17,23 +17,22 @@ from openai import OpenAI
 import time
 import json
 import ast
-
 from dotenv import load_dotenv
 
 
 
 # Add root directory to sys.path safely for both script and interactive environments
-try:
-    root_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'))
-    print(f"Root path set to: {root_path}")
+# try:
+#     root_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'))
+#     print(f"Root path set to: {root_path}")
 
-except NameError:
-    # __file__ is not defined in Interactive Window
-    root_path = os.path.abspath(os.path.join(os.getcwd(), '../../'))
+# except NameError:
+#     # __file__ is not defined in Interactive Window
+#     root_path = os.path.abspath(os.path.join(os.getcwd(), '../../'))
 
-if root_path not in sys.path:
-    sys.path.append(root_path)
-    print(f"Added root path to sys.path: {root_path}")
+# if root_path not in sys.path:
+#     sys.path.append(root_path)
+#     print(f"Added root path to sys.path: {root_path}")
 
 # Now safely import
 # from database.db_AI_utils import load_dataframe_to_table, inserted_column, replace_empty_with_null_safe,get_table_AI
@@ -41,6 +40,7 @@ from database.db_AI_utils import *
 from app.constants import *
 from app.prompts import *
 load_dotenv()
+
 
 
 

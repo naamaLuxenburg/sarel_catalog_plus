@@ -4,3 +4,4 @@ database/DB_config.json
 .streamlit/secrets.toml
 app/.env
 testing.py
+*.pyc

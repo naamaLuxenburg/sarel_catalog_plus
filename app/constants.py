@@ -1,8 +1,11 @@
+import os
 
 # app/constants.py
 print("✅ constants.py is running")
 # Constants used across the application
 
+#workspace root path
+workspace_root = os.environ.get("PYTHONPATH", os.getcwd())
 
 #sarel catalog constants
 product_id_CE1SARL='ARTNR'

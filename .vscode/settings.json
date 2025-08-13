@@ -1,5 +1,5 @@
 {
-    "python.analysis.extraPaths": [
-        "./database"
-    ]
+    "terminal.integrated.env.windows": {
+        "PYTHONPATH": "${workspaceFolder}"
+    }
 }
