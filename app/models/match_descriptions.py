@@ -34,10 +34,12 @@ def read_prodcuts_data(flag_db=False):
     Reads all the prodcuts exist data returns a DataFrame.
     """
     if flag_db:
+        print(f"Reading data from the database")
         df_MARA =get_table_AI('MARA_Products', 'AI')
         df_med =get_table_AI('Med_data', 'AI')
         df_update_price =get_table_AI(table_name='A501_A703_A503_Updated_prices',db_label='AI')
     else:
+        print(f"Reading data from parquet files in {workspace_root}")
         df_MARA = pd.read_parquet(os.path.join(workspace_root, 'Data/MARA_Products.parquet'))
         df_med = pd.read_parquet(os.path.join(workspace_root, 'Data/Med_data.parquet'))
         df_update_price = pd.read_parquet(os.path.join(workspace_root, 'Data/A501_A703_A503_Updated_prices.parquet'))
@@ -468,6 +470,7 @@ if __name__ == "__main__":
     #file_name='Medical Commodities IMC - input'
     file_name='Sarel_TBL JER 2025 01 EN Health standard list - input'
     df_input = pd.read_excel(os.path.join(input_path, f'{file_name}.xlsx'))
+    #df=read_prodcuts_data()
     df_final=create_match_product(df_input)
 
 
