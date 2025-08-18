@@ -1,477 +1,725 @@
 import pandas as pd
-from collections import OrderedDict
+from collections import OrderedDict,Counter
 import os
 import sys
 from rapidfuzz import process, fuzz
 import importlib
 import re
+import faiss
+from sentence_transformers import SentenceTransformer
+from sentence_transformers.util import cos_sim
+from transformers import AutoTokenizer, AutoModel
+import torch
+from sklearn.preprocessing import normalize
+from typing import Set, List, Dict, Any, Tuple
+import string
+import math
+from nltk.tokenize import word_tokenize
+import numpy as np
 
-
-
-# # Add root directory to sys.path safely for both script and interactive environments
-# try:
-#     root_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'))
-#     print(f"Root path set to: {root_path}")
-# except NameError:
-#     # __file__ is not defined in Interactive Window
-#     root_path = os.path.abspath(os.path.join(os.getcwd(), '../../'))
-
-# if root_path not in sys.path:
-#     sys.path.append(root_path)
-#     print(f"Added root path to sys.path: {root_path}")
 
 # Now safely import
-from app.models.process_descriptions import contains_hebrew,get_faiss_neighbors
 from app.constants import *
+model = SentenceTransformer(model_name)
 # print(f"✅ constants.py imported successfully {final_desc}")
-from database.db_AI_utils import *
+# from database.db_AI_utils import *
 # import database.db_AI_utils as db_utils
 # importlib.reload(db_utils)
 
 
-def read_prodcuts_data(flag_db=False):
+def read_prodcuts_data(flag_db: bool = False) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Reads all the prodcuts exist data returns a DataFrame.
+    Reads and consolidates product data from either the database or parquet files, 
+    enriches it with medical details, updated prices, and new product descriptions.
+
+    Args:
+        flag_db (bool): 
+            - True: Read product data directly from the database.  
+            - False: Read product data from parquet files (local).  
+
+    Returns:
+        Tuple[pd.DataFrame, pd.DataFrame]: 
+            - df_products_filtered: DataFrame containing filtered product data ready for matching.  
+            - df_db: DataFrame containing product IDs and descriptions for database storage. (specific columns)
+         
+
+    Summary:
+        - Loads product data (MARA), medical data, updated price lists, 
+          and new product descriptions.  
+        - Merges these sources into a unified DataFrame.  
+        - Ensures a complete description field (`final_desc`) by filling 
+          missing values with the base product description.  
+        - Filters down to a clean set of relevant columns for further use.  
+
+    Notes:
+        - When reading from the database, only products with general Sarel 
+          price list (`price_client == 'X'`) are included. 
+        - when there wil be in access to the database, the updated price will be read only from there, for privacy issues.  
+        - The file `df_new_desc.xlsx` is currently loaded from disk but is 
+          expected to be sourced from the database in the future.  
+        - The order of columns is preserved using `OrderedDict` to remove 
+          duplicates while keeping order.  
+        - The function prints progress and summary information, including 
+          the final product count.  
+
+
     """
+    cols_med= [product_id_MARA,med_generic,med_concentration,med_dosage, med_dose]
+    cols_price=[product_id_MARA,price_in_coin, price_coin, price_unit, price_unit_ILS]
+    data_path=os.path.join(workspace_root, 'Data')
+
     if flag_db:
         print(f"Reading data from the database")
         df_MARA =get_table_AI('MARA_Products', 'AI')
         df_med =get_table_AI('Med_data', 'AI')
         df_update_price =get_table_AI(table_name='A501_A703_A503_Updated_prices',db_label='AI')
+        df_update_price_filter=df_update_price[df_update_price[price_client]=='X'].reset_index(drop=True) #only General Sarel price list
+        df_products=df_MARA.merge(df_update_price_filter[cols_price], on=product_id_MARA, how='left')
+
     else:
-        print(f"Reading data from parquet files in {workspace_root}")
-        df_MARA = pd.read_parquet(os.path.join(workspace_root, 'Data/MARA_Products.parquet'))
-        df_med = pd.read_parquet(os.path.join(workspace_root, 'Data/Med_data.parquet'))
-        df_update_price = pd.read_parquet(os.path.join(workspace_root, 'Data/A501_A703_A503_Updated_prices.parquet'))
-    df_update_price_filter=df_update_price[df_update_price[price_client]=='X'].reset_index(drop=True) #only General Sarel price list
-    cols_med= [product_id_MARA,med_generic,med_concentration,med_dosage, med_dose]
-    cols_price=[product_id_MARA,price_in_coin, price_coin, price_unit, price_unit_ILS]
+        print(f"Reading data from parquet files in {data_path}")
+        df_products = pd.read_parquet(os.path.join(data_path, 'MARA_Products.parquet'))
+        df_med = pd.read_parquet(os.path.join(data_path, 'Med_data.parquet'))
+        # df_update_price = pd.read_parquet(os.path.join(data_path, 'A501_A703_A503_Updated_prices.parquet'))
     
+    
+    df_products_med=df_products.merge(df_med[cols_med], on=product_id_MARA,how='left')
+    df_new_desc = pd.read_excel(os.path.join(data_path, 'df_new_desc.xlsx')) ##it will be from the DB in the future
+    df_products_total = df_products_med.merge(df_new_desc, on=product_id_MARA, how='left')
 
-    df_products_med=df_MARA.merge(df_med[cols_med], on=product_id_MARA,how='left')
-    df_products_price=df_products_med.merge(df_update_price_filter[cols_price], on=product_id_MARA, how='left')
-
-
-    desc_path = os.path.join(workspace_root, 'app/models/temp_result')
-    df_new_desc = pd.read_excel(os.path.join(desc_path, 'df_new_desc.xlsx')) ##it will be from the DB in the future
-    df_products_total = df_products_price.merge(df_new_desc, on=product_id_MARA, how='left')
-
-    ##remove later:
     df_products_total[final_desc]=df_products_total[final_desc].fillna(df_products_total[product_desc])
 
-    cols_MARA=[product_id_MARA,product_desc,final_desc,product_dv_id,manufacturer_model,supplier_name, product_basic_unit,product_order_unit]
+    cols_MARA=[product_id_MARA,product_desc,final_desc,product_dv_id,product_code_sub_field,manufacturer_model,supplier_name, product_basic_unit,product_order_unit]
     cols_all = cols_MARA + cols_med + cols_price
     cols_filtered=list(OrderedDict.fromkeys(cols_all))
-    df_products_final=df_products_total[cols_filtered]
-    print(f"✅ read_prodcuts_data() completed")
+    cols_check=[c for c in cols_filtered if c in df_products_total.columns] #only because the diffrent with the prices columns
+    df_products_final=df_products_total[cols_check]
     print(f"Total products in df_products: {len(df_products_final)}")
 
-    return df_products_final
+    #filtered products
+    ls_mtkl_drop = ['199999', '111000']  # filter products that are bonus or service.
 
-def filtered_input_data(df_input):
+    df_products_filtered = df_products_final[
+        (df_products_final[final_desc].notna()) #not relevant used with empty desc
+        & (df_products_final[product_dv_id].isin(ls_dvs)) #for now only from the relevant DVs
+        & (~df_products_final[product_id_MARA].str.match(r'^(P|SP)', na=False)) #exclude products starting with P or SP (not really products)
+        & (~df_products_final[product_code_sub_field].isin(ls_mtkl_drop)) #exclude products with mtkl 199999 or 111000
+    ].reset_index(drop=True)
+    print(f'Total products after filtering: {len(df_products_filtered)}')
+
+    df_db = df_products_filtered[[product_id_MARA, product_desc, final_desc, product_dv_id, med_generic]].copy()
+
+
+
+    print(f"✅ read_prodcuts_data() completed")
+
+    return df_products_filtered,df_db
+
+
+def load_embeddings_sort_DB(df_db:pd.DataFrame) -> Tuple[pd.DataFrame, np.ndarray]:
+    """Load embeddings and sort them to match the product IDs in df_db.
+    Args:
+        df_db (pd.DataFrame): DataFrame containing product IDs and descriptions.
+        Returns:
+        Tuple[pd.DataFrame, np.ndarray]: 
+            - df_db_aligned: Sort DB - DataFrame containing product IDs and descriptions aligned with embeddings.
+            - db_embeddings_aligned: NumPy array of embeddings aligned with product IDs.
+        """
+
+
+    model_name_save=model_name.split('/')[-1]  # Extract model name for saving
+    db_embeddings = np.load(f"Data/embedding_data/db_embeddings_{model_name_save}.npy")
+    db_matnr = np.load(f"Data/embedding_data/db_matnr_{model_name_save}.npy", allow_pickle=True)
+
+    # Convert db_matnr to a DataFrame for easy alignment
+    df_embeddings = pd.DataFrame({
+        "MATNR": db_matnr,
+        "embedding_index": range(len(db_matnr))
+    })
+
+    # Merge current df_db with saved embeddings (inner join keeps only common products)
+    df_db_aligned = df_db.merge(df_embeddings, left_on=product_id_MARA, right_on="MATNR", how="inner")
+
+    # Now reorder df_db_aligned to follow embedding order
+    df_db_aligned = df_db_aligned.sort_values("embedding_index").reset_index(drop=True)
+
+    # Filter embeddings to match aligned products
+    db_embeddings_aligned = db_embeddings[df_db_aligned["embedding_index"].values]
+
+    missing_products = set(df_db[product_id_MARA]) - set(db_matnr)
+    print("Products missing embeddings:", len(missing_products))
+
+    df_db_aligned.drop(columns=["embedding_index"], inplace=True)  # Clean up DataFrame
+    return df_db_aligned, db_embeddings_aligned
+
+
+def contains_hebrew(text: str) -> bool:
+    # Function to check if a string contains any Hebrew letters
+    return bool(re.search(r'[\u0590-\u05FF]', str(text)))
+
+
+def filtered_input_data(df_input:pd.DataFrame, col_input_desc:string) -> pd.DataFrame:
     """
-    Filters the input DataFrame to remove rows with Hebrew characters in the input_desc column.
+    Filters the input DataFrame to remove rows with Hebrew characters in the col_input_desc column.
     Args:
         df_input (pd.DataFrame): Input DataFrame containing the data to filter.
+        col_input_desc (str): Name of the column containing descriptions input (from the user input).
 
     Returns:
         pd.DataFrame: Filtered DataFrame with rows containing Hebrew characters removed.
     """
-    df_input_heb_filtered = df_input[~df_input[input_desc].apply(contains_hebrew)].reset_index(drop=True)
+    df_input_heb_filtered = df_input[~df_input[col_input_desc].apply(contains_hebrew)].reset_index(drop=True)
     df_input_filtered=df_input_heb_filtered.drop_duplicates().reset_index(drop=True)
-    df_input_filtered.insert(0, 'input_id', range(1, len(df_input_filtered) + 1))
-    df_input_filtered[input_desc_norm]=df_input_filtered[input_desc].str.lower()
-    num_input_records = df_input_filtered['input_id'].nunique()
+    df_input_filtered.insert(0, col_input_id , range(1, len(df_input_filtered) + 1))
+    df_input_filtered[col_input_desc_norm]=df_input_filtered[col_input_desc].str.lower()
+    num_input_records = df_input_filtered[col_input_id].nunique()
     print(f'Total input records after filtering Hebrew and remove duplicates records: {num_input_records}')
-    # df_input_filtered_org= df_input_filtered.copy()
+    
 
     return df_input_filtered
 
 
-def get_fuzzy_matches(input_val, reference_list, threshold=85, top_k=5):
-    """
-    Perform fuzzy matching on the input value against a reference list.
+def encode_embeddings_input(df_input: pd.DataFrame) -> Tuple[List[str], np.ndarray]:
+    """Any input text descriptions to embeddings using the SentenceTransformer model.
     Args:
-        input_val (str): The input value to match. (e.g., manufacturer model number or description)
-        reference_list (list): The list of reference values to match against. (e.g., manufacturer model number or description)
-        threshold (int): The score threshold for matches.
-        top_k (int): The number of top matches to return.
-
-    Returns:
-        - top_matches: List of top K matches with their scores 
-        - above_threshold_matches: List of matches above the threshold with their scores
-        - best_match: The best match from the reference list
-        - best_score: The score of the best match
-    Notes:
-    -----
-    If the input value is missing or empty, all outputs are None.
-    Uses RapidFuzz with token_sort_ratio for scoring.
-    
-    """
-
-    # print(f'The th is {threshold}')
-    # Check if input_val is empty or NaN 
-    if not isinstance(input_val, str) or input_val.strip() == "":
-        return None, None,None, None  # Skip if empty or NaN
-
-    
-    #score_methods=fuzz.token_set_ratio #also for reordered and Flexible with extra/missing words
-    score_methods=fuzz.token_sort_ratio #Good for reordered tokens
-    # limit=round(len(reference_list)/3)
-    limit=250
-    
-    # the number of matches depended on the limit.
-    all_matches = process.extract(
-        input_val,
-        reference_list,
-        scorer=score_methods, limit=limit
-    )
-        # Format as list of dicts
-    all_matches_dict = sorted(
-        [{"match": m[0], "score": m[1]} for m in all_matches],
-        key=lambda x: x["score"],
-        reverse=True
-    )
-    # Top K matches (even if score is low)
-    top_matches = all_matches_dict[:top_k]
-    
-    # All matches above threshold
-    above_threshold_matches = [m for m in all_matches_dict if m["score"] >= threshold]
-
-        # Best match and score
-    best_match = all_matches_dict[0]["match"] if all_matches_dict else None
-    best_score = all_matches_dict[0]["score"] if all_matches_dict else None
-
-    return top_matches, above_threshold_matches,best_match, best_score
-
-
-def apply_fuzzy_match(df, col_input, reference_col, reference_df, suffix="", threshold=85, top_k=5):
-    """
-    Apply fuzzy matching to a column in a DataFrame and add result columns.
-    Args:
-        df (pd.DataFrame): DataFrame containing the input column to match.
-        col_input (str): Column name in df to perform fuzzy matching on.
-        reference_col (str): Column name in reference_df to match against.
-        reference_df (pd.DataFrame): DataFrame containing the reference values (to create the reference list).
-        suffix (str): Suffix to append to the result columns.
-        threshold (int): Score threshold for matches.
-        top_k (int): Number of top matches to return.
-
-    Returns:
-        Updated DataFrame with:
-            - top matches list
-            - matches above threshold
-            - best match
-            - best score
-    """
-    reference_list = reference_df[reference_col].dropna().unique().tolist()
-    # print(f'the ref list is: {reference_list}')
-    print(f"🔍 Starting fuzzy match: {col_input} → {reference_col} (threshold={threshold}, top_k={top_k})")
-    
-    result_cols = [f"{suffix}top_matches", f"{suffix}matches_above_threshold", f"{suffix}best_match", f"{suffix}best_score"]
-
-    df[result_cols] = df[col_input].apply(
-        lambda x: pd.Series(get_fuzzy_matches(x, reference_list, threshold=threshold, top_k=top_k))
-    )
-    
-    print(f"✅ Fuzzy match complete. Added columns: {', '.join(result_cols)}\n")
-    return df
-
-def create_fuzzy_match_columns_statistics(df_input_filtered, df_products, suffix, threshold=85):
-    """
-    Create fuzzy match columns and print statistics.
-    Args:
+        df_input (pd.DataFrame): DataFrame containing input descriptions.
+        Returns:
+        Tuple[List[str], np.ndarray]: 
+            - List of input descriptions.
+            - Corresponding embeddings as a NumPy array.
         """
-    
-    flag_apply=True
-    if 'manu' in suffix : #manufacturer
-        fuzzy_value='provider numbers'
-        col_input=input_provider_num
-        reference_col= manufacturer_model
+    input_texts = df_input[col_input_desc_norm].tolist()
+    print(f"Encoding {len(input_texts)} input descriptions...")
+    input_embeddings = model.encode(input_texts)
 
-    elif 'desc' in suffix: #description
-        fuzzy_value='descriptions'
-        col_input=input_desc_norm
-        reference_col= 'desc_fix'
-    else: 
-        fuzzy_value='generic'
-        col_input=input_desc_norm
-        reference_col= 'fix_Generic_Name' #med_generic
+    return input_texts, input_embeddings
+
+
+def create_tokens(text: str) -> Set[str]:
+    """
+    Tokenize a text string into lowercase words, removing stopwords.
+    """
+    # Define simple English stopwords
+    STOPWORDS = set([
+        "the", "and", "of", "a", "an", "by", "for", "in", "on", "with", "to"
+    ])
+    tokens = word_tokenize(text)  # split text into words
+    tokens = {token.lower() for token in tokens if token.lower() not in STOPWORDS and token not in string.punctuation}
+    return tokens
+
+def fuzzy_token_overlap_ratio(tokens1: set, tokens2: set, generic: str = None, threshold: int = 80) -> float:
+    """
+    Calculates fuzzy-aware token overlap ratio between two token sets.
+    Tokens are counted as overlapping if exact match OR fuzzy similarity >= threshold.
+    Also checks if the generic token appears in tokens1.
+
+    Args:
+        tokens1 (set): Tokenized input string
+        tokens2 (set): Tokenized DB string
+        generic (str): Generic material string (already exists in tokens2)
+        threshold (int): Similarity threshold (0-100) for considering tokens equal.
+
+    Returns:
+        tuple: (overlap_ratio, generic_match_flag)
+            - overlap_ratio: float between 0.0 and 1.0
+            - generic_match_flag: 1 if generic is found in tokens1, else 0
+    """
+
+    if not tokens1 or not tokens2:
+        return 0.0, 0.0
+
+    # --- Token overlap calculation ---
+    common_tokens = set()
+    for t1 in tokens1:
+        for t2 in tokens2:
+            if t1 == t2 or fuzz.ratio(t1, t2) >= threshold:
+                common_tokens.add(t1)
+                break
+
+    ratio = len(common_tokens) / len(tokens1)
+
+     # --- Generic flag ---
+    if generic is np.nan or generic is None:
+        generic_match = None
+    else:
+        generic_match = 0.0
+    if generic is not None and not (isinstance(generic, float) and math.isnan(generic)):
+        for t in tokens1:
+            if generic == t or fuzz.ratio(generic, t) >= threshold:
+                generic_match = 1.0
+                break
+
+    return round(ratio,3), generic_match
+
+
+def apply_match_descriptions(df_input_filtered: pd.DataFrame, df_db: pd.DataFrame, input_embeddings: np.ndarray,input_texts:List[str] , db_embeddings: np.ndarray, top_k:int = 50 ) -> pd.DataFrame:
     
-    if col_input not in df_input_filtered.columns:
-        print(f"Column '{col_input}' not found in input data — matching skipped")
-        flag_apply=False
+    # Normalize embeddings for cosine similarity
+    faiss.normalize_L2(db_embeddings)
+    faiss.normalize_L2(input_embeddings)
+
+    # --- Build FAISS index ---
+    print("Building FAISS index...")
+    embedding_dim = db_embeddings.shape[1]
+    index = faiss.IndexFlatIP(embedding_dim)  # Inner Product for cosine similarity
+    index.add(db_embeddings)  # add DB embeddings to index
+
+    # --- Search for top-k similar descriptions ---
+    print(f"Searching for top-k={top_k} similar descriptions...")
+    distances, indices = index.search(input_embeddings, top_k)  # distances are cosine similarity scores
+
+    # --- Map results back to DataFrame ---
+    # --- Combine FAISS similarity + token overlap ---
+    print(f"Creating results DataFrame with final scores...")
+    results = []
+    for i, input_desc_row in enumerate(input_texts):
+        input_id_row = df_input_filtered.iloc[i][col_input_id]
+        input_tokens = create_tokens(input_desc_row)  # cleaned tokens for input
+
+        for rank, (idx, score) in enumerate(zip(indices[i], distances[i])):
+            db_desc=df_db.iloc[idx][final_desc]
+            db_tokens = create_tokens(db_desc)  # cleaned tokens for DB
+            db_generic=df_db.iloc[idx][med_generic]
+
+            faiss_score = round(float(score),3)   
+            score_token, score_generic=fuzzy_token_overlap_ratio(input_tokens,db_tokens, db_generic)
+            comb_score =round( 0.85 *float(score) + 0.15 * float(score_token),3)  # combine FAISS similarity with token overlap
+            if score_generic is None:
+                comb_generic = 0.0
+            else:
+                comb_generic =round( 0.8 * float(score_generic) + 0.2 * float(score),3)  # combine generic match with token overlap    
+            
+            #df results columns
+            results.append({
+                'Serial_id_number': input_id_row,
+                'input_description': input_desc_row,
+                # 'input_result': df_input_filtered.iloc[i]['Sarel Catalog Number'],
+                # 'Sarel Division': df_input_filtered.iloc[i]['Sarel Division'],
+                # 'desc_input_result': df_input_filtered.iloc[i][product_desc],
+                # 'desc_input_generic': df_input_filtered.iloc[i][med_generic],
+                'input_tokens': list(input_tokens),
+                'matched_description': db_desc,
+                'matched_tokens': list(db_tokens), 
+                'db_MATNR': df_db.iloc[idx][product_id_MARA],
+                'db_SPART': df_db.iloc[idx][product_dv_id],
+                'db_generic': db_generic,
+                'faiss_score': faiss_score,
+                'token_overlap': score_token,
+                'combination_score': round(comb_score,3),
+                'generic_score': score_generic,
+                'combination_generic_score': comb_generic,
+                'final_score':max(faiss_score, comb_score, comb_generic),  # choose the best score
+                'rank': rank+1
+            })
+
+    df_results = pd.DataFrame(results)
+    df_results = df_results.sort_values([col_input_id, 'final_score'], ascending=[True, False])
+    print(f"Done applying match descriptions with {len(df_results)} results.")
+
+    return df_results
+
+def create_match_product(df_input:pd.DataFrame, col_input_desc:string, col_input_manu:string = None) -> pd.DataFrame:
+    #step 1 -  read the products data and load embeddings
+    df_products, df_db_org=read_prodcuts_data()
+    df_db, db_embeddings=load_embeddings_sort_DB(df_db_org.copy())
+
+
+    #step 2 - input data: read the input, filter it and embed it
+    print(f'The input data has {len(df_input)} records.')
+    print(f'The input desc column is: {col_input_desc}, and the input manu column is: {col_input_manu}')
+    df_input_filtered=filtered_input_data(df_input, col_input_desc)
+    input_texts, input_embeddings = encode_embeddings_input(df_input_filtered)
+
+    
+    #step 3 - find the match description from the input to the products database
+    df_results=apply_match_descriptions(df_input_filtered, df_db, input_embeddings, input_texts, db_embeddings, top_k=50)
+
+
+    return df_results
+
+
+
+# def create_match_product_old(df_input:pd.DataFrame, col_input_desc:string, col_input_manu:string = None) -> pd.DataFrame:
+#     #step 1 -  read the products data and load embeddings
+#     df_products=read_prodcuts_data()
+
+#     #step 2 - input data: read the input, filter it and embed it
+#     df_input_filtered=filtered_input_data(df_input, col_input_desc)
+
+#     #step 3 - apply fuzzy matching and updated df
+#     # parames
+#     suffix_manu = "manu_"
+#     suffix_desc = "desc_"
+
+
+#     df_input_filtered=create_fuzzy_match_columns_statistics(df_input_filtered, df_products, suffix_manu,th_manu)
+#     df_input_filtered=create_fuzzy_match_columns_statistics(df_input_filtered, df_products, suffix_desc,th_desc)
+
+
+
+#     df_final=enhanced_breakdown_and_final_match(df_input_filtered, df_products)
+
+#     return df_final
+
+
+# def get_fuzzy_matches(input_val, reference_list, threshold=85, top_k=5):
+#     """
+#     Perform fuzzy matching on the input value against a reference list.
+#     Args:
+#         input_val (str): The input value to match. (e.g., manufacturer model number or description)
+#         reference_list (list): The list of reference values to match against. (e.g., manufacturer model number or description)
+#         threshold (int): The score threshold for matches.
+#         top_k (int): The number of top matches to return.
+
+#     Returns:
+#         - top_matches: List of top K matches with their scores 
+#         - above_threshold_matches: List of matches above the threshold with their scores
+#         - best_match: The best match from the reference list
+#         - best_score: The score of the best match
+#     Notes:
+#     -----
+#     If the input value is missing or empty, all outputs are None.
+#     Uses RapidFuzz with token_sort_ratio for scoring.
+    
+#     """
+
+#     # print(f'The th is {threshold}')
+#     # Check if input_val is empty or NaN 
+#     if not isinstance(input_val, str) or input_val.strip() == "":
+#         return None, None,None, None  # Skip if empty or NaN
+
+    
+#     #score_methods=fuzz.token_set_ratio #also for reordered and Flexible with extra/missing words
+#     score_methods=fuzz.token_sort_ratio #Good for reordered tokens
+#     # limit=round(len(reference_list)/3)
+#     limit=250
+    
+#     # the number of matches depended on the limit.
+#     all_matches = process.extract(
+#         input_val,
+#         reference_list,
+#         scorer=score_methods, limit=limit
+#     )
+#         # Format as list of dicts
+#     all_matches_dict = sorted(
+#         [{"match": m[0], "score": m[1]} for m in all_matches],
+#         key=lambda x: x["score"],
+#         reverse=True
+#     )
+#     # Top K matches (even if score is low)
+#     top_matches = all_matches_dict[:top_k]
+    
+#     # All matches above threshold
+#     above_threshold_matches = [m for m in all_matches_dict if m["score"] >= threshold]
+
+#         # Best match and score
+#     best_match = all_matches_dict[0]["match"] if all_matches_dict else None
+#     best_score = all_matches_dict[0]["score"] if all_matches_dict else None
+
+#     return top_matches, above_threshold_matches,best_match, best_score
+
+
+# def apply_fuzzy_match(df, col_input, reference_col, reference_df, suffix="", threshold=85, top_k=5):
+#     """
+#     Apply fuzzy matching to a column in a DataFrame and add result columns.
+#     Args:
+#         df (pd.DataFrame): DataFrame containing the input column to match.
+#         col_input (str): Column name in df to perform fuzzy matching on.
+#         reference_col (str): Column name in reference_df to match against.
+#         reference_df (pd.DataFrame): DataFrame containing the reference values (to create the reference list).
+#         suffix (str): Suffix to append to the result columns.
+#         threshold (int): Score threshold for matches.
+#         top_k (int): Number of top matches to return.
+
+#     Returns:
+#         Updated DataFrame with:
+#             - top matches list
+#             - matches above threshold
+#             - best match
+#             - best score
+#     """
+#     reference_list = reference_df[reference_col].dropna().unique().tolist()
+#     # print(f'the ref list is: {reference_list}')
+#     print(f"🔍 Starting fuzzy match: {col_input} → {reference_col} (threshold={threshold}, top_k={top_k})")
+    
+#     result_cols = [f"{suffix}top_matches", f"{suffix}matches_above_threshold", f"{suffix}best_match", f"{suffix}best_score"]
+
+#     df[result_cols] = df[col_input].apply(
+#         lambda x: pd.Series(get_fuzzy_matches(x, reference_list, threshold=threshold, top_k=top_k))
+#     )
+    
+#     print(f"✅ Fuzzy match complete. Added columns: {', '.join(result_cols)}\n")
+#     return df
+
+# def create_fuzzy_match_columns_statistics(df_input_filtered, df_products,col_input_manu, suffix, threshold=85):
+#     """
+#     Create fuzzy match columns and print statistics.
+#     Args:
+#         """
+    
+#     flag_apply=True
+#     if 'manu' in suffix : #manufacturer
+#         fuzzy_value='provider numbers'
+#         col_input=col_input_manu
+#         reference_col= manufacturer_model
+
+#     elif 'desc' in suffix: #description
+#         fuzzy_value='descriptions'
+#         col_input=col_input_desc_norm
+#         reference_col= 'desc_fix'
+#     else: 
+#         fuzzy_value='generic'
+#         col_input=col_input_desc_norm
+#         reference_col= 'fix_Generic_Name' #med_generic
+    
+#     if col_input not in df_input_filtered.columns:
+#         print(f"Column '{col_input}' not found in input data — matching skipped")
+#         flag_apply=False
   
 
-    if flag_apply:
-        num_input_records = df_input_filtered['input_id'].nunique()
-        df_input_filtered_update = apply_fuzzy_match(
-        df_input_filtered, 
-        col_input, 
-        reference_col, 
-        df_products, 
-        suffix=suffix, 
-        threshold=threshold
-        )
+#     if flag_apply:
+#         num_input_records = df_input_filtered['input_id'].nunique()
+#         df_input_filtered_update = apply_fuzzy_match(
+#         df_input_filtered, 
+#         col_input, 
+#         reference_col, 
+#         df_products, 
+#         suffix=suffix, 
+#         threshold=threshold
+#         )
 
-        print(f"📊 First Summary after fuzzy matching according on {fuzzy_value} with threshold={threshold}")
-        num_empty = df_input_filtered_update[col_input].isna().sum()
-        num_recoreds = len(df_input_filtered_update[col_input].dropna().tolist())
-        num_unique_recoreds = len(df_input_filtered_update[col_input].dropna().unique().tolist())
-        print(f"Total unique {fuzzy_value}: {num_unique_recoreds} from {num_input_records} records, precentage: {(num_unique_recoreds/num_input_records)*100:.2f}%")
-        print(f"Total {fuzzy_value}: {num_recoreds} from {num_input_records} records, precentage: {(num_recoreds/num_input_records)*100:.2f}%")
-        print(f"Total empty {fuzzy_value}: {num_empty} from {num_input_records} records, precentage: {(num_empty/num_input_records)*100:.2f}%")
-        print(f"best_score {fuzzy_value}: {df_input_filtered[f'{suffix}best_score'].describe()}")
-    else:
-        df_input_filtered_update=df_input_filtered.copy()
+#         print(f"📊 First Summary after fuzzy matching according on {fuzzy_value} with threshold={threshold}")
+#         num_empty = df_input_filtered_update[col_input].isna().sum()
+#         num_recoreds = len(df_input_filtered_update[col_input].dropna().tolist())
+#         num_unique_recoreds = len(df_input_filtered_update[col_input].dropna().unique().tolist())
+#         print(f"Total unique {fuzzy_value}: {num_unique_recoreds} from {num_input_records} records, precentage: {(num_unique_recoreds/num_input_records)*100:.2f}%")
+#         print(f"Total {fuzzy_value}: {num_recoreds} from {num_input_records} records, precentage: {(num_recoreds/num_input_records)*100:.2f}%")
+#         print(f"Total empty {fuzzy_value}: {num_empty} from {num_input_records} records, precentage: {(num_empty/num_input_records)*100:.2f}%")
+#         print(f"best_score {fuzzy_value}: {df_input_filtered[f'{suffix}best_score'].describe()}")
+#     else:
+#         df_input_filtered_update=df_input_filtered.copy()
 
-    return df_input_filtered_update
-
-
-
-def print_statistics_match(df_final):
-    """
-    Prints statistics about the final DataFrame after matching.
-    """
-    print("📊 Match Breakdown Summary")
-
-    total_rows = len(df_final)
-    unique_inputs = df_final['input_id'].nunique()
-    print(f"• Total rows in final DataFrame: {total_rows}")
-    print(f"• Unique input IDs in final DataFrame: {unique_inputs}")
-
-    # 1. Manufacturer info
-    df_with_manu = df_final[df_final[input_provider_num].notna()]
-    input_id_unique_manu = df_with_manu['input_id'].nunique()
-    unique_manu = df_with_manu[input_provider_num].nunique()
-
-    print(f"• {len(df_with_manu)} rows have a manufacturer number ({len(df_with_manu) / total_rows:.2%})")
-    print(f"• {input_id_unique_manu} of them is the original manufacturer data ({input_id_unique_manu / unique_inputs:.2%})")
-    print(f"• {unique_manu} unique manufacturer input data ({unique_manu / total_rows:.2%})")
-
-
-    # # 2. Descriptions present
-    df_with_desc = df_final[df_final[input_desc].notna()]
-    input_id_unique_desc = df_with_desc['input_id'].nunique()
-    unique_desc = df_with_desc[input_desc].nunique()
-
-    print(f"• {len(df_with_desc)} rows have valid descriptions (no missing records)")
-    print(f"• {input_id_unique_desc} rows have valid descriptions from org data (no missing records)")
-    print(f"• {unique_desc} rows with unique descriptions from org data (no missing records)")
-
-
-    # 3. Full match via manufacturer (Rule 1 - exact match score 100)
-    rule1_full_manu = df_final[df_final['rule_case'] == 'rule1_manu_100']
-    rule1_full_manu_unique = rule1_full_manu['input_id'].nunique()
-    print(f"• {len(rule1_full_manu)} rows have full manufacturer match (score 100) ({len(rule1_full_manu) / unique_manu:.2%} of unique manu matches)")
-    print(f"• {rule1_full_manu_unique} unique rows have full manufacturer match (score 100) ({rule1_full_manu_unique / unique_manu:.2%} of unique manu matches)")
-
-
-    # 5. Full match by description only
-    rule1_full_desc = df_final[df_final['rule_case'] == 'rule1_desc_100']
-    rule1_full_desc_unique = rule1_full_desc['input_id'].nunique()
-    print(f"• {len(rule1_full_desc)} rows have full description match only (score 100)")
-    print(f"• {rule1_full_desc_unique} unique rows have full manufacturer match (score 100)")
-
-      # Full match by description and manu
-    rule1_full_both = df_final[df_final['rule_case'] == 'rule1_both_100']
-    rule1_full_both_unique = rule1_full_both['input_id'].nunique()
-    print(f"• {len(rule1_full_both)} rows double full match description and manufacturer (score 100)")
-    print(f"• {rule1_full_both_unique} unique rows with double full match description and manufacturer (score 100)")
+#     return df_input_filtered_update
 
 
 
-    # 6. Both matched same product (desc & manu match same product)
-    rule2_same_product = df_final[df_final['rule_case'] == 'rule2_same_match']
-    print(f"• {len(rule2_same_product)} rows where both manu and desc matched the same product ({len(rule2_same_product) / total_rows:.2%})")
+# def print_statistics_match(df_final):
+#     """
+#     Prints statistics about the final DataFrame after matching.
+#     """
+#     print("📊 Match Breakdown Summary")
+
+#     total_rows = len(df_final)
+#     unique_inputs = df_final['input_id'].nunique()
+#     print(f"• Total rows in final DataFrame: {total_rows}")
+#     print(f"• Unique input IDs in final DataFrame: {unique_inputs}")
+
+#     # 1. Manufacturer info
+#     df_with_manu = df_final[df_final[input_provider_num].notna()]
+#     input_id_unique_manu = df_with_manu['input_id'].nunique()
+#     unique_manu = df_with_manu[input_provider_num].nunique()
+
+#     print(f"• {len(df_with_manu)} rows have a manufacturer number ({len(df_with_manu) / total_rows:.2%})")
+#     print(f"• {input_id_unique_manu} of them is the original manufacturer data ({input_id_unique_manu / unique_inputs:.2%})")
+#     print(f"• {unique_manu} unique manufacturer input data ({unique_manu / total_rows:.2%})")
 
 
-    # 7. Only description score > 75 or no manu
-    rule3_desc_only = df_final[df_final['rule_case'] == 'rule3_only_desc']
-    print(f"• {len(rule3_desc_only)} rows where only description is above {th_desc} or no manufacturer ({len(rule3_desc_only) / total_rows:.2%})")
-    print(f"• {rule3_desc_only[input_desc].nunique()} distinc rows where only description is above {th_desc} or no manufacturer ({len(rule3_desc_only) / total_rows:.2%})")
+#     # # 2. Descriptions present
+#     df_with_desc = df_final[df_final[input_desc].notna()]
+#     input_id_unique_desc = df_with_desc['input_id'].nunique()
+#     unique_desc = df_with_desc[input_desc].nunique()
+
+#     print(f"• {len(df_with_desc)} rows have valid descriptions (no missing records)")
+#     print(f"• {input_id_unique_desc} rows have valid descriptions from org data (no missing records)")
+#     print(f"• {unique_desc} rows with unique descriptions from org data (no missing records)")
+
+
+#     # 3. Full match via manufacturer (Rule 1 - exact match score 100)
+#     rule1_full_manu = df_final[df_final['rule_case'] == 'rule1_manu_100']
+#     rule1_full_manu_unique = rule1_full_manu['input_id'].nunique()
+#     print(f"• {len(rule1_full_manu)} rows have full manufacturer match (score 100) ({len(rule1_full_manu) / unique_manu:.2%} of unique manu matches)")
+#     print(f"• {rule1_full_manu_unique} unique rows have full manufacturer match (score 100) ({rule1_full_manu_unique / unique_manu:.2%} of unique manu matches)")
+
+
+#     # 5. Full match by description only
+#     rule1_full_desc = df_final[df_final['rule_case'] == 'rule1_desc_100']
+#     rule1_full_desc_unique = rule1_full_desc['input_id'].nunique()
+#     print(f"• {len(rule1_full_desc)} rows have full description match only (score 100)")
+#     print(f"• {rule1_full_desc_unique} unique rows have full manufacturer match (score 100)")
+
+#       # Full match by description and manu
+#     rule1_full_both = df_final[df_final['rule_case'] == 'rule1_both_100']
+#     rule1_full_both_unique = rule1_full_both['input_id'].nunique()
+#     print(f"• {len(rule1_full_both)} rows double full match description and manufacturer (score 100)")
+#     print(f"• {rule1_full_both_unique} unique rows with double full match description and manufacturer (score 100)")
 
 
 
-    # 8. Only manufacturer score > 75
-    rule3_manu_only = df_final[df_final['rule_case'] == 'rule3_only_manu']
-    print(f"• {len(rule3_manu_only)} rows where only manufacturer score is above {th_manu} ({len(rule3_manu_only) / total_rows:.2%})")
-    print(f"• {rule3_manu_only['input_id'].nunique()} original rows where only manufacturer is above {th_manu} or no description ({len(rule3_desc_only) / total_rows:.2%})")
-    print(f"• {rule3_manu_only[input_provider_num].nunique()} Distinc rows where only manufacturer is above {th_manu} or no description ({len(rule3_desc_only) / total_rows:.2%})")
+#     # 6. Both matched same product (desc & manu match same product)
+#     rule2_same_product = df_final[df_final['rule_case'] == 'rule2_same_match']
+#     print(f"• {len(rule2_same_product)} rows where both manu and desc matched the same product ({len(rule2_same_product) / total_rows:.2%})")
+
+
+#     # 7. Only description score > 75 or no manu
+#     rule3_desc_only = df_final[df_final['rule_case'] == 'rule3_only_desc']
+#     print(f"• {len(rule3_desc_only)} rows where only description is above {th_desc} or no manufacturer ({len(rule3_desc_only) / total_rows:.2%})")
+#     print(f"• {rule3_desc_only[input_desc].nunique()} distinc rows where only description is above {th_desc} or no manufacturer ({len(rule3_desc_only) / total_rows:.2%})")
 
 
 
-    # 9. Both scores above 75 - took higher one
-    rule4_both_above_75 = df_final[df_final['rule_case'].isin(['rule4_both_high_manu','rule4_both_high_desc'])]
-    print(f"• {len(rule4_both_above_75)} rows where both scores > 75 – picked the higher one")
+#     # 8. Only manufacturer score > 75
+#     rule3_manu_only = df_final[df_final['rule_case'] == 'rule3_only_manu']
+#     print(f"• {len(rule3_manu_only)} rows where only manufacturer score is above {th_manu} ({len(rule3_manu_only) / total_rows:.2%})")
+#     print(f"• {rule3_manu_only['input_id'].nunique()} original rows where only manufacturer is above {th_manu} or no description ({len(rule3_desc_only) / total_rows:.2%})")
+#     print(f"• {rule3_manu_only[input_provider_num].nunique()} Distinc rows where only manufacturer is above {th_manu} or no description ({len(rule3_desc_only) / total_rows:.2%})")
 
 
 
-    # 10. Remaining - below 75 or empty
-    rule5_no_match = df_final[df_final['rule_case'].isna()]
-    print(f"• {len(rule5_no_match)} rows with no match (both scores < 75 or missing) ({len(rule5_no_match) / total_rows:.2%})")
-    print(f"• {rule5_no_match['input_id'].nunique()} org rows with no match (both scores < 75 or missing) ({len(rule5_no_match) / total_rows:.2%})")
+#     # 9. Both scores above 75 - took higher one
+#     rule4_both_above_75 = df_final[df_final['rule_case'].isin(['rule4_both_high_manu','rule4_both_high_desc'])]
+#     print(f"• {len(rule4_both_above_75)} rows where both scores > 75 – picked the higher one")
 
 
 
-def enhanced_breakdown_and_final_match(df, df_products):
-    """
-    Applies a rule-based breakdown to determine the final product match from fuzzy matching results.
+#     # 10. Remaining - below 75 or empty
+#     rule5_no_match = df_final[df_final['rule_case'].isna()]
+#     print(f"• {len(rule5_no_match)} rows with no match (both scores < 75 or missing) ({len(rule5_no_match) / total_rows:.2%})")
+#     print(f"• {rule5_no_match['input_id'].nunique()} org rows with no match (both scores < 75 or missing) ({len(rule5_no_match) / total_rows:.2%})")
+
+
+
+# def enhanced_breakdown_and_final_match(df, df_products):
+#     """
+#     Applies a rule-based breakdown to determine the final product match from fuzzy matching results.
     
-    Rules:
-    1. Full match (score == 100) for either or both → pick highest, and indicate which.
-    2. Same result from both fuzzy searches (manufacturer & description) and 
-    their texts match → use that match.
-    3. Only one score ≥ 75 → take that one (desc or manu).
-    4. Both ≥ 75 → pick the higher score.
-    5. Otherwise → no match.
+#     Rules:
+#     1. Full match (score == 100) for either or both → pick highest, and indicate which.
+#     2. Same result from both fuzzy searches (manufacturer & description) and 
+#     their texts match → use that match.
+#     3. Only one score ≥ 75 → take that one (desc or manu).
+#     4. Both ≥ 75 → pick the higher score.
+#     5. Otherwise → no match.
 
-    Args:
-        df (pd.DataFrame): DataFrame with fuzzy match results (must include description, best_match, best_score, etc.)
-        df_products (pd.DataFrame): Product list with reference descriptions (`desc_fix`) and `manufacturer_model`.
+#     Args:
+#         df (pd.DataFrame): DataFrame with fuzzy match results (must include description, best_match, best_score, etc.)
+#         df_products (pd.DataFrame): Product list with reference descriptions (`desc_fix`) and `manufacturer_model`.
 
-    Returns:
-        pd.DataFrame: Input dataframe + 3 new columns:
-            - final_match_product (str): The final product match based on rules
-            - final_match_desc (str): the final description based on rules
-            - final_match_score (int): matching score
-            - final_match_source (str): match source - according to 'desc', 'manu', 'both', or 'none'
-            -'rule_case' (str): rule case applied for the match accoridng to the rules above. The opinal names:
-            1.'rule1_manu_100', 'rule1_desc_100', 'rule1_both_100'
-            2. 'rule2_same_match'
-            3. 'rule3_only_manu', 'rule3_only_desc'
-            4. 'rule4_both_high_manu', 'rule4_both_high_desc'
-            5. None - 'rule5_no_match'for no match
+#     Returns:
+#         pd.DataFrame: Input dataframe + 3 new columns:
+#             - final_match_product (str): The final product match based on rules
+#             - final_match_desc (str): the final description based on rules
+#             - final_match_score (int): matching score
+#             - final_match_source (str): match source - according to 'desc', 'manu', 'both', or 'none'
+#             -'rule_case' (str): rule case applied for the match accoridng to the rules above. The opinal names:
+#             1.'rule1_manu_100', 'rule1_desc_100', 'rule1_both_100'
+#             2. 'rule2_same_match'
+#             3. 'rule3_only_manu', 'rule3_only_desc'
+#             4. 'rule4_both_high_manu', 'rule4_both_high_desc'
+#             5. None - 'rule5_no_match'for no match
         
-    """
-    # Join to bring the manufacturer description from product reference
-    if 'manu_best_match' in df:
-        df_products_without_manu_model = df_products[~df_products[manufacturer_model].isna()].reset_index(drop=True)
-        df = df.merge(
-            df_products_without_manu_model[[manufacturer_model, final_desc, product_id_MARA, product_dv_id]].rename(columns={final_desc: 'manu_desc_match',product_id_MARA: 'manu_product_match',product_dv_id:'manu_dv_match' }),
-            how='left',
-            left_on='manu_best_match',
-            right_on=manufacturer_model
-        )
-        df.drop(columns=[manufacturer_model], inplace=True)
-    else:
-        print(f'Manufacturer not in the input file - merge skipped')
+#     """
+#     # Join to bring the manufacturer description from product reference
+#     if 'manu_best_match' in df:
+#         df_products_without_manu_model = df_products[~df_products[manufacturer_model].isna()].reset_index(drop=True)
+#         df = df.merge(
+#             df_products_without_manu_model[[manufacturer_model, final_desc, product_id_MARA, product_dv_id]].rename(columns={final_desc: 'manu_desc_match',product_id_MARA: 'manu_product_match',product_dv_id:'manu_dv_match' }),
+#             how='left',
+#             left_on='manu_best_match',
+#             right_on=manufacturer_model
+#         )
+#         df.drop(columns=[manufacturer_model], inplace=True)
+#     else:
+#         print(f'Manufacturer not in the input file - merge skipped')
 
-    if 'desc_best_match' in df:
-        df = df.merge(
-            df_products[[manufacturer_model, final_desc, product_id_MARA, product_dv_id]].rename(columns={product_id_MARA: 'desc_product_match', product_dv_id:'desc_dv_match'}),
-            how='left',
-            left_on='desc_best_match',
-            right_on=final_desc
-        )
-        df.drop(columns=[final_desc], inplace=True)
-    else:
-        print(f'Description not in the input file - merge skipped')
+#     if 'desc_best_match' in df:
+#         df = df.merge(
+#             df_products[[manufacturer_model, final_desc, product_id_MARA, product_dv_id]].rename(columns={product_id_MARA: 'desc_product_match', product_dv_id:'desc_dv_match'}),
+#             how='left',
+#             left_on='desc_best_match',
+#             right_on=final_desc
+#         )
+#         df.drop(columns=[final_desc], inplace=True)
+#     else:
+#         print(f'Description not in the input file - merge skipped')
 
 
-    def apply_match_logic(row, th_match=85):
-        # desc_val = row.get('description', '')
-        manu_desc = row.get('manu_desc_match')
-        manu_score = row.get('manu_best_score', 0)
-        manu_match = row.get('manu_best_match')
-        manu_product = row.get('manu_product_match')
-        manu_dv = row.get('manu_dv_match')
-        # print(f'manu values: manu_desc={manu_desc}, manu_score={manu_score}, manu_match={manu_match}, manu_product={manu_product}, manu_dv={manu_dv}')
+#     def apply_match_logic(row, th_match=85):
+#         # desc_val = row.get('description', '')
+#         manu_desc = row.get('manu_desc_match')
+#         manu_score = row.get('manu_best_score', 0)
+#         manu_match = row.get('manu_best_match')
+#         manu_product = row.get('manu_product_match')
+#         manu_dv = row.get('manu_dv_match')
+#         # print(f'manu values: manu_desc={manu_desc}, manu_score={manu_score}, manu_match={manu_match}, manu_product={manu_product}, manu_dv={manu_dv}')
 
-        desc_manu=row.get(manufacturer_model)
-        desc_score = row.get('desc_best_score', 0)
-        desc_match = row.get('desc_best_match')
-        desc_product = row.get('desc_product_match')
-        desc_dv = row.get('desc_dv_match')
-        # print(f'desc values: desc_manu={desc_manu}, desc_score={desc_score}, desc_match={desc_match}, desc_product={desc_product}, desc_dv={desc_dv}')
+#         desc_manu=row.get(manufacturer_model)
+#         desc_score = row.get('desc_best_score', 0)
+#         desc_match = row.get('desc_best_match')
+#         desc_product = row.get('desc_product_match')
+#         desc_dv = row.get('desc_dv_match')
+#         # print(f'desc values: desc_manu={desc_manu}, desc_score={desc_score}, desc_match={desc_match}, desc_product={desc_product}, desc_dv={desc_dv}')
 
-        manu_source="manu"
-        desc_source="desc"
-        both_source="both"
+#         manu_source="manu"
+#         desc_source="desc"
+#         both_source="both"
 
-        # Rule 1: Score == 100 → source both if equal, else stronger
-        if manu_score == 100 and desc_score == 100: #for now assupe both are equal product
-            return pd.Series([desc_product, desc_dv,desc_match, desc_manu,100,both_source, 'rule1_both_100'])
-        elif manu_score == 100:
-            return pd.Series([manu_product, manu_dv,manu_desc,manu_match, 100, manu_source,'rule1_manu_100'])
-        elif desc_score == 100:
-            return pd.Series([desc_product,desc_dv,desc_match,desc_manu, 100, desc_source,'rule1_desc_100'])
+#         # Rule 1: Score == 100 → source both if equal, else stronger
+#         if manu_score == 100 and desc_score == 100: #for now assupe both are equal product
+#             return pd.Series([desc_product, desc_dv,desc_match, desc_manu,100,both_source, 'rule1_both_100'])
+#         elif manu_score == 100:
+#             return pd.Series([manu_product, manu_dv,manu_desc,manu_match, 100, manu_source,'rule1_manu_100'])
+#         elif desc_score == 100:
+#             return pd.Series([desc_product,desc_dv,desc_match,desc_manu, 100, desc_source,'rule1_desc_100'])
 
-        # Rule 2: same result from both -> descriptions match
-        if pd.notna(manu_match) and pd.notna(desc_match) and manu_desc == desc_match:
-            both_score= ((manu_score+desc_score)/2)+5 #improve later
-            return pd.Series([desc_product,desc_dv, desc_match,desc_manu,  both_score, both_source,'rule2_same_match'])
+#         # Rule 2: same result from both -> descriptions match
+#         if pd.notna(manu_match) and pd.notna(desc_match) and manu_desc == desc_match:
+#             both_score= ((manu_score+desc_score)/2)+5 #improve later
+#             return pd.Series([desc_product,desc_dv, desc_match,desc_manu,  both_score, both_source,'rule2_same_match'])
 
-        # Rule 3: one over 75, other is low or missing
-        if manu_score >= th_match and (desc_score < th_match or pd.isna(desc_score)):
-            return pd.Series([manu_product, manu_dv, manu_desc,manu_match, manu_score, manu_source,'rule3_only_manu'])
-        if desc_score >= th_match and (manu_score < th_match or pd.isna(manu_score)):
-            return pd.Series([desc_product, desc_dv, desc_match, desc_manu, desc_score, desc_source,'rule3_only_desc'])
+#         # Rule 3: one over 75, other is low or missing
+#         if manu_score >= th_match and (desc_score < th_match or pd.isna(desc_score)):
+#             return pd.Series([manu_product, manu_dv, manu_desc,manu_match, manu_score, manu_source,'rule3_only_manu'])
+#         if desc_score >= th_match and (manu_score < th_match or pd.isna(manu_score)):
+#             return pd.Series([desc_product, desc_dv, desc_match, desc_manu, desc_score, desc_source,'rule3_only_desc'])
 
-        # Rule 4: both ≥ 75 → choose higher
-        if manu_score >= th_match and desc_score >= th_match:
-            if manu_score >= desc_score:
-                return pd.Series([manu_product, manu_dv, manu_desc,manu_match, manu_score, manu_source, 'rule4_both_high_manu'])
-            else:
-                return pd.Series([desc_product, desc_dv, desc_match, desc_manu, desc_score, desc_source,'rule4_both_high_desc'])
+#         # Rule 4: both ≥ 75 → choose higher
+#         if manu_score >= th_match and desc_score >= th_match:
+#             if manu_score >= desc_score:
+#                 return pd.Series([manu_product, manu_dv, manu_desc,manu_match, manu_score, manu_source, 'rule4_both_high_manu'])
+#             else:
+#                 return pd.Series([desc_product, desc_dv, desc_match, desc_manu, desc_score, desc_source,'rule4_both_high_desc'])
 
-        # Rule 5: no match
-        return pd.Series([None, None, None, None, None, None, None])
+#         # Rule 5: no match
+#         return pd.Series([None, None, None, None, None, None, None])
 
-    cols_final_match=['final_match_product','final_match_dv','final_match_desc' ,'final_match_manufacturer_model','final_match_score', 'final_match_source','rule_case']
-    df[cols_final_match] = df.apply(apply_match_logic, axis=1)        
+#     cols_final_match=['final_match_product','final_match_dv','final_match_desc' ,'final_match_manufacturer_model','final_match_score', 'final_match_source','rule_case']
+#     df[cols_final_match] = df.apply(apply_match_logic, axis=1)        
     
-    #print_statistics_match(df)
+#     #print_statistics_match(df)
 
-    # cols_total=['input_id', input_desc,input_supplier_name ,input_provider_num, input_id_number]+cols_final_match
+#     # cols_total=['input_id', input_desc,input_supplier_name ,input_provider_num, input_id_number]+cols_final_match
 
-    # df_final=df[cols_total]
-    df_final=df.copy()
+#     # df_final=df[cols_total]
+#     df_final=df.copy()
     
-    return df_final
-
-def create_match_product(df_input):
-    #step 1 -  read the products data
-    df_products=read_prodcuts_data()
-
-    #step 2 - read the input data and filter it
-    df_input_filtered=filtered_input_data(df_input)
-
-    #step 3 - apply fuzzy matching and updated df
-    #parames
-    suffix_manu = "manu_"
-    suffix_desc = "desc_"
-
-
-    df_input_filtered=create_fuzzy_match_columns_statistics(df_input_filtered, df_products, suffix_manu,th_manu)
-    df_input_filtered=create_fuzzy_match_columns_statistics(df_input_filtered, df_products, suffix_desc,th_desc)
-
-
-
-    df_final=enhanced_breakdown_and_final_match(df_input_filtered, df_products)
-
-    return df_final
-
-
-
+#     return df_final
 
 
 
 if __name__ == "__main__":
-    # df_MARA =get_table_AI('MARA_Products', 'AI')
-    # df_med =get_table_AI('Med_data', 'AI')
-    # df_update_price =get_table_AI(table_name='A501_A703_A503_Updated_prices',db_label='AI')
-    # df_MARA.to_parquet(os.path.join(root_path, 'Data/MARA_Products.parquet'), index=False)
-    # df_med.to_parquet(os.path.join(root_path, 'Data/Med_data.parquet'), index=False)
-    # df_update_price.to_parquet(os.path.join(root_path, 'Data/A501_A703_A503_Updated_prices.parquet'), index=False)
+    print('X')
+    # input_path = os.path.join(workspace_root, 'input/final')
+    # print(f"Input path: {input_path}")
+    # file_name='Medical Commodities IMC - result_manual'
+    # df_input = pd.read_excel(os.path.join(input_path, f'{file_name}.xlsx'))
+    # # df_products, df_db_org=read_prodcuts_data()
+    # # df_db,db_embeddings=load_embeddings_sort_DB(df_db_org.copy())
+    # # print(db_embeddings.dtypes)
 
-
-    input_path = os.path.join(workspace_root, 'input')
-    #file_name='Medical Commodities IMC - input'
-    file_name='Sarel_TBL JER 2025 01 EN Health standard list - input'
-    df_input = pd.read_excel(os.path.join(input_path, f'{file_name}.xlsx'))
-    #df=read_prodcuts_data()
-    df_final=create_match_product(df_input)
+    # df_final=create_match_product(df_input)
+    # print(f"Final DataFrame shape: {df_final.shape}")
+    # save_path = os.path.join(workspace_root, 'Data/output')
+    # df_final.to_excel(os.path.join(save_path, "try1.xlsx"), index=False)
 
 
 
@@ -809,7 +1057,7 @@ if __name__ == "__main__":
 
     
     
-    # # a=df_final_up[df_final_up.duplicated(subset='input_id', keep=False)]
+    # a=df_final_up[df_final_up.duplicated(subset='input_id', keep=False)]
 
 
 
