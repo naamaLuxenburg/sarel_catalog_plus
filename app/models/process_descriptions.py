@@ -155,7 +155,7 @@ def clean_desc(desc, manu, num):
         desc_fix2=remove_unit(desc_fix1, int(num))
     else:
         desc_fix2=desc_fix1
-        print(f"Warning: num is NaN for description code number , need to update the tables: ZTMM035, ZTSD044,T006A and run fix Konp")
+        print(f"Warning: num is NaN for description code number ({desc}) , need to update the tables: ZTMM035, ZTSD044,T006A and run fix Konp")
 
     # step4 - only one space between words
     desc_fix3 = re.sub(r'\s+', ' ', desc_fix2).strip()

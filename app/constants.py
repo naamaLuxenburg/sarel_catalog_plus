@@ -1,4 +1,6 @@
 import os
+# from sentence_transformers import SentenceTransformer
+
 
 # app/constants.py
 print("✅ constants.py is running")
@@ -6,6 +8,10 @@ print("✅ constants.py is running")
 
 #workspace root path
 workspace_root = os.environ.get("PYTHONPATH", os.getcwd())
+
+#model embeddings
+model_name='pritamdeka/BioBERT-mnli-snli-scinli-scitail-mednli-stsb'
+# model = SentenceTransformer(model_name)
 
 #sarel catalog constants
 product_id_CE1SARL='ARTNR'
@@ -57,12 +63,13 @@ th_desc = 85
 
 
 #constants for input data from suppliers - need to change
-input_supplier_name='Supplier Name'
-input_provider_num='Provider number supplier'
-input_id_number='Id number'
-input_desc='Description'
-input_desc_norm='Description_norm'
-input_id='input_id'
+# input_supplier_name='Supplier Name'
+# input_provider_num='Provider number supplier'
+# input_desc='Description' -> input from the user: col_input_desc
+
+#constants for input data- application addition
+col_input_desc_norm='Description_norm'  ###org to change input_desc_norm
+col_input_id='Serial_id_number' ###input_id
 
 
 

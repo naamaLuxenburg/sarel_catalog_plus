@@ -5,3 +5,4 @@ database/DB_config.json
 app/.env
 testing.py
 *.pyc
+Data/A501_A703_A503_Updated_prices.parquet
