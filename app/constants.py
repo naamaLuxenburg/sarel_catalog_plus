@@ -71,6 +71,22 @@ th_desc = 85
 col_input_desc_norm='Description_norm'  ###org to change input_desc_norm
 col_input_id='Serial_id_number' ###input_id
 
+#for the results AI
+col_input_result_tokens='input_tokens'
+col_input_result_match_desc='matched_description'
+col_input_result_match_tokens='matched_tokens'
+col_input_result_product='db_MATNR'
+col_input_result_product_dv='db_SPART'
+col_input_result_generic='db_generic'
+col_input_result_faiss_score='faiss_score'
+col_input_result_faiss_rank='faiss_rank'
+col_input_result_token_score='token_score'
+col_input_result_generic_score='generic_score'
+col_input_result_comb_faiss_token='combination_faiss_token_score'
+col_input_result_comb_faiss_generic='combination_faiss_generic_score'
+col_input_result_final_score='final_score'
+col_input_result_num='Result_number'
+
 
 
 #constants for db catalog new

@@ -252,7 +252,7 @@ def fuzzy_token_overlap_ratio(tokens1: set, tokens2: set, generic: str = None, t
     return round(ratio,3), generic_match
 
 
-def apply_match_descriptions(df_input_filtered: pd.DataFrame, df_db: pd.DataFrame, input_embeddings: np.ndarray,input_texts:List[str] , db_embeddings: np.ndarray, top_k:int = 50 ) -> pd.DataFrame:
+def apply_match_descriptions(col_input_desc:str, df_input_filtered: pd.DataFrame, df_db: pd.DataFrame, input_embeddings: np.ndarray,input_texts:List[str] , db_embeddings: np.ndarray, top_k:int = 50 ) -> pd.DataFrame:
     
     # Normalize embeddings for cosine similarity
     faiss.normalize_L2(db_embeddings)
@@ -283,33 +283,50 @@ def apply_match_descriptions(df_input_filtered: pd.DataFrame, df_db: pd.DataFram
 
             faiss_score = round(float(score),3)   
             score_token, score_generic=fuzzy_token_overlap_ratio(input_tokens,db_tokens, db_generic)
-            comb_score =round( 0.85 *float(score) + 0.15 * float(score_token),3)  # combine FAISS similarity with token overlap
+            comb_faiss_token =round( 0.85 *float(score) + 0.15 * float(score_token),3)  # combine FAISS similarity with token overlap
             if score_generic is None:
-                comb_generic = 0.0
+                comb_faiss_generic = 0.0
             else:
-                comb_generic =round( 0.8 * float(score_generic) + 0.2 * float(score),3)  # combine generic match with token overlap    
-            
+                comb_faiss_generic =round( 0.8 * float(score_generic) + 0.2 * float(score),3)  # combine generic match with token overlap    
+        
             #df results columns
+            # results.append({
+            #     col_input_id: input_id_row,
+            #     'input_description': input_desc_row,
+            #     # 'input_result': df_input_filtered.iloc[i]['Sarel Catalog Number'],
+            #     # 'Sarel Division': df_input_filtered.iloc[i]['Sarel Division'],
+            #     # 'desc_input_result': df_input_filtered.iloc[i][product_desc],
+            #     # 'desc_input_generic': df_input_filtered.iloc[i][med_generic],
+            #     'input_tokens': list(input_tokens),
+            #     'matched_description': db_desc,
+            #     'matched_tokens': list(db_tokens), 
+            #     'db_MATNR': df_db.iloc[idx][product_id_MARA],
+            #     'db_SPART': df_db.iloc[idx][product_dv_id],
+            #     'db_generic': db_generic,
+            #     'faiss_score': faiss_score,
+            #     'token_overlap': score_token,
+            #     'combination_score': round(comb_score,3),
+            #     'generic_score': score_generic,
+            #     'combination_generic_score': comb_generic,
+            #     'final_score':max(faiss_score, comb_score, comb_generic),  # choose the best score
+            #     'rank': rank+1
+            # })
             results.append({
-                'Serial_id_number': input_id_row,
-                'input_description': input_desc_row,
-                # 'input_result': df_input_filtered.iloc[i]['Sarel Catalog Number'],
-                # 'Sarel Division': df_input_filtered.iloc[i]['Sarel Division'],
-                # 'desc_input_result': df_input_filtered.iloc[i][product_desc],
-                # 'desc_input_generic': df_input_filtered.iloc[i][med_generic],
-                'input_tokens': list(input_tokens),
-                'matched_description': db_desc,
-                'matched_tokens': list(db_tokens), 
-                'db_MATNR': df_db.iloc[idx][product_id_MARA],
-                'db_SPART': df_db.iloc[idx][product_dv_id],
-                'db_generic': db_generic,
-                'faiss_score': faiss_score,
-                'token_overlap': score_token,
-                'combination_score': round(comb_score,3),
-                'generic_score': score_generic,
-                'combination_generic_score': comb_generic,
-                'final_score':max(faiss_score, comb_score, comb_generic),  # choose the best score
-                'rank': rank+1
+                col_input_id: input_id_row,
+                col_input_desc: input_desc_row,
+                col_input_result_tokens: list(input_tokens),
+                col_input_result_match_desc: db_desc,
+                col_input_result_match_tokens: list(db_tokens), 
+                col_input_result_product: df_db.iloc[idx][product_id_MARA],
+                col_input_result_product_dv: df_db.iloc[idx][product_dv_id],
+                col_input_result_generic: db_generic,
+                col_input_result_faiss_score: faiss_score,
+                col_input_result_token_score: score_token,
+                col_input_result_generic_score: score_generic,
+                col_input_result_comb_faiss_token: comb_faiss_token,
+                col_input_result_comb_faiss_generic: comb_faiss_generic,
+                col_input_result_final_score:max(faiss_score, comb_faiss_token, comb_faiss_generic),  # choose the best score
+                col_input_result_faiss_rank: rank+1
             })
 
     df_results = pd.DataFrame(results)
@@ -332,7 +349,7 @@ def create_match_product(df_input:pd.DataFrame, col_input_desc:string, col_input
 
     
     #step 3 - find the match description from the input to the products database
-    df_results=apply_match_descriptions(df_input_filtered, df_db, input_embeddings, input_texts, db_embeddings, top_k=50)
+    df_results=apply_match_descriptions(col_input_desc, df_input_filtered, df_db, input_embeddings, input_texts, db_embeddings, top_k=50)
 
 
     return df_results
