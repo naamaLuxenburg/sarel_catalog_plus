@@ -16,13 +16,16 @@ import numpy as np
 from numpy.typing import NDArray
 import string
 import math
-from nltk.tokenize import word_tokenize
-
-
+import nltk
 
 # Now safely import
 from app.constants import *
 model = SentenceTransformer(model_name)
+# Download punkt resources if missing
+nltk.download("punkt")
+nltk.download("punkt_tab")
+from nltk.tokenize import word_tokenize
+
 # print(f"✅ constants.py imported successfully {final_desc}")
 # from database.db_AI_utils import *
 # import database.db_AI_utils as db_utils
