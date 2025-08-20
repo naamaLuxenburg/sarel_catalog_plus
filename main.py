@@ -26,7 +26,7 @@ st.set_page_config(page_title="Sarel Catalog Enrichment", layout="centered")
 
 # ✅ load silently (no user notification)
 db_embeddings = load_embeddings()
-print(db_embeddings.heas(2))
+print(db_embeddings.head(2))
 
 st.title("העשרת קטלוג שראל")
 st.write("שלב ראשון - העלאת קובץ ובדיקת נתונים")
