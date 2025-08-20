@@ -120,7 +120,7 @@ def read_prodcuts_data(flag_db: bool = False) -> Tuple[pd.DataFrame, pd.DataFram
     return df_products_filtered,df_db
 
 
-def load_embeddings_sort_DB(df_db:pd.DataFrame) -> Tuple[pd.DataFrame, np.ndarray]:
+def load_embeddings_sort_DB(df_db:pd.DataFrame, db_embeddings:np.ndarray) -> Tuple[pd.DataFrame, np.ndarray]:
     """Load embeddings and sort them to match the product IDs in df_db.
     Args:
         df_db (pd.DataFrame): DataFrame containing product IDs and descriptions.
@@ -132,28 +132,33 @@ def load_embeddings_sort_DB(df_db:pd.DataFrame) -> Tuple[pd.DataFrame, np.ndarra
 
 
     model_name_save=model_name.split('/')[-1]  # Extract model name for saving
-    db_embeddings = np.load(f"Data/embedding_data/db_embeddings_{model_name_save}.npy")
-    db_matnr = np.load(f"Data/embedding_data/db_matnr_{model_name_save}.npy", allow_pickle=True)
+    if db_embeddings is None:
+        print(f'The db embedding from local storage')
+        db_embeddings = np.load(f"Data/embedding_data/db_embeddings_{model_name_save}.npy")
+    else:
+        print(f'The db embeddings load succecfully form the git link')
+    
+    df_embeddings = pd.read_parquet(f"Data/embedding_data/db_MATNR_{model_name_save}.parquet")
 
-    # Convert db_matnr to a DataFrame for easy alignment
-    df_embeddings = pd.DataFrame({
-        "MATNR": db_matnr,
-        "embedding_index": range(len(db_matnr))
-    })
+    # # Convert db_matnr to a DataFrame for easy alignment
+    # df_embeddings = pd.DataFrame({
+    #     "MATNR": db_matnr,
+    #     "embedding_index": range(len(db_matnr))
+    # })
 
     # Merge current df_db with saved embeddings (inner join keeps only common products)
     df_db_aligned = df_db.merge(df_embeddings, left_on=product_id_MARA, right_on="MATNR", how="inner")
 
     # Now reorder df_db_aligned to follow embedding order
-    df_db_aligned = df_db_aligned.sort_values("embedding_index").reset_index(drop=True)
+    df_db_aligned = df_db_aligned.sort_values(col_embedding_index).reset_index(drop=True)
 
     # Filter embeddings to match aligned products
-    db_embeddings_aligned = db_embeddings[df_db_aligned["embedding_index"].values]
+    db_embeddings_aligned = db_embeddings[df_db_aligned[col_embedding_index].values]
 
-    missing_products = set(df_db[product_id_MARA]) - set(db_matnr)
+    missing_products = set(df_db[product_id_MARA]) - set(df_embeddings[product_id_MARA])
     print("Products missing embeddings:", len(missing_products))
 
-    df_db_aligned.drop(columns=["embedding_index"], inplace=True)  # Clean up DataFrame
+    df_db_aligned.drop(columns=[col_embedding_index], inplace=True)  # Clean up DataFrame
     return df_db_aligned, db_embeddings_aligned
 
 
@@ -342,7 +347,7 @@ def apply_match_descriptions(col_input_desc:str, df_input_filtered: pd.DataFrame
 def create_match_product(df_input:pd.DataFrame, db_embeddings:np.ndarray, col_input_desc:str, col_input_manu:str = None) -> pd.DataFrame:
     #step 1 -  read the products data and load embeddings
     df_products, df_db_org=read_prodcuts_data()
-    df_db, db_embeddings=load_embeddings_sort_DB(df_db_org.copy())
+    df_db, db_embeddings=load_embeddings_sort_DB(df_db_org.copy(), db_embeddings)
 
 
     #step 2 - input data: read the input, filter it and embed it

@@ -11,6 +11,7 @@ workspace_root = os.environ.get("PYTHONPATH", os.getcwd())
 
 #model embeddings
 model_name='pritamdeka/BioBERT-mnli-snli-scinli-scitail-mednli-stsb'
+col_embedding_index='embedding_index'
 # model = SentenceTransformer(model_name)
 
 
@@ -59,8 +60,8 @@ product_order_basic_unit='BSTME_merge_MEINS'
 product_desc_update='full_desc_update'
 rules_desc='rules_desc'
 final_desc='desc_fix'
-th_manu= 85
-th_desc = 85
+# th_manu= 85
+# th_desc = 85
 
 
 #constants for input data from suppliers - need to change

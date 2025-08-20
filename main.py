@@ -8,7 +8,7 @@ import numpy as np
 from app.models.match_descriptions import create_match_product
 
 EMBEDDINGS_URL = "https://github.com/naamaLuxenburg/sarel_catalog_plus/releases/download/v1/db_embeddings_BioBERT-mnli-snli-scinli-scitail-mednli-stsb.npy"
-LOCAL_PATH = "data/embeddings_data/db_embeddings_BioBERT-mnli-snli-scinli-scitail-mednli-stsb.npy"
+LOCAL_PATH = "data/embeddings_data2/db_embeddings_BioBERT-mnli-snli-scinli-scitail-mednli-stsb.npy"
 
 def load_embeddings():
     """Download once if missing, then load into memory."""
@@ -24,12 +24,13 @@ def load_embeddings():
 
 st.set_page_config(page_title="Sarel Catalog Enrichment", layout="centered")
 
-# ✅ load silently (no user notification)
-db_embeddings = load_embeddings()
-print(db_embeddings.head(2))
 
 st.title("העשרת קטלוג שראל")
 st.write("שלב ראשון - העלאת קובץ ובדיקת נתונים")
+
+# ✅ load silently (no user notification)
+db_embeddings = load_embeddings()
+print(f'Done loading embeddings')
 
 uploaded_file = st.file_uploader("בחר קובץ Excel", type=["xlsx"])
 
@@ -64,9 +65,10 @@ if uploaded_file is not None:
             df_result.to_excel(output, index=False, engine='openpyxl')
             output.seek(0)
 
-            st.download_button(
+            clicked=st.download_button(
                 label="📥 הורד קובץ תוצאה",
                 data=output,
                 file_name="matched_output.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
+           
