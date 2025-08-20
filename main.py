@@ -24,14 +24,13 @@ def load_embeddings():
 
 st.set_page_config(page_title="Sarel Catalog Enrichment", layout="centered")
 
-
-st.title("העשרת קטלוג שראל")
-st.write("שלב ראשון - העלאת קובץ ובדיקת נתונים")
-
 # ✅ load silently (no user notification)
 db_embeddings = load_embeddings()
 print(f'Done loading embeddings')
 
+
+st.title("העשרת קטלוג שראל")
+st.write("שלב ראשון - העלאת קובץ ובדיקת נתונים")
 uploaded_file = st.file_uploader("בחר קובץ Excel", type=["xlsx"])
 
 if uploaded_file is not None:
