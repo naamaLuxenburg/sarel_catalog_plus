@@ -12,10 +12,12 @@ from transformers import AutoTokenizer, AutoModel
 import torch
 from sklearn.preprocessing import normalize
 from typing import Set, List, Dict, Any, Tuple
+import numpy as np
+from numpy.typing import NDArray
 import string
 import math
 from nltk.tokenize import word_tokenize
-import numpy as np
+
 
 
 # Now safely import
@@ -104,6 +106,8 @@ def read_prodcuts_data(flag_db: bool = False) -> Tuple[pd.DataFrame, pd.DataFram
         & (df_products_final[product_dv_id].isin(ls_dvs)) #for now only from the relevant DVs
         & (~df_products_final[product_id_MARA].str.match(r'^(P|SP)', na=False)) #exclude products starting with P or SP (not really products)
         & (~df_products_final[product_code_sub_field].isin(ls_mtkl_drop)) #exclude products with mtkl 199999 or 111000
+        & (~df_products_final[product_id_MARA].str.startswith(('X', 'Y'))) #exclude products starting with ('X', 'Y'))
+
     ].reset_index(drop=True)
     print(f'Total products after filtering: {len(df_products_filtered)}')
 
@@ -158,7 +162,7 @@ def contains_hebrew(text: str) -> bool:
     return bool(re.search(r'[\u0590-\u05FF]', str(text)))
 
 
-def filtered_input_data(df_input:pd.DataFrame, col_input_desc:string) -> pd.DataFrame:
+def filtered_input_data(df_input:pd.DataFrame, col_input_desc:str) -> pd.DataFrame:
     """
     Filters the input DataFrame to remove rows with Hebrew characters in the col_input_desc column.
     Args:
@@ -335,7 +339,7 @@ def apply_match_descriptions(col_input_desc:str, df_input_filtered: pd.DataFrame
 
     return df_results
 
-def create_match_product(df_input:pd.DataFrame, col_input_desc:string, col_input_manu:string = None) -> pd.DataFrame:
+def create_match_product(df_input:pd.DataFrame, db_embeddings:np.ndarray, col_input_desc:str, col_input_manu:str = None) -> pd.DataFrame:
     #step 1 -  read the products data and load embeddings
     df_products, df_db_org=read_prodcuts_data()
     df_db, db_embeddings=load_embeddings_sort_DB(df_db_org.copy())

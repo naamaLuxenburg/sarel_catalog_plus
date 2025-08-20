@@ -13,13 +13,14 @@ workspace_root = os.environ.get("PYTHONPATH", os.getcwd())
 model_name='pritamdeka/BioBERT-mnli-snli-scinli-scitail-mednli-stsb'
 # model = SentenceTransformer(model_name)
 
+
 #sarel catalog constants
 product_id_CE1SARL='ARTNR'
 product_id_MARA='MATNR'
 product_desc='full_desc'
 product_code_sub_field='MATKL'
 product_desc_sub_field='WGBEZ'
-product_dv_id='SPART'
+product_dv_id='SPART' #full word.
 product_dv_desc='VTEXT'
 product_category='MTPOS_MARA'
 product_basic_unit='MEINS'
