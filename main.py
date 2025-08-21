@@ -10,16 +10,6 @@ from app.models.match_descriptions import create_match_product
 
 EMBEDDINGS_URL = "https://github.com/naamaLuxenburg/sarel_catalog_plus/releases/download/v1/db_embeddings_BioBERT-mnli-snli-scinli-scitail-mednli-stsb.npy"
 
-# def load_embeddings():
-#     """Download once if missing, then load into memory."""
-#     if not os.path.exists(LOCAL_PATH):
-#         print("Downloading embeddings file for the first time...")  # Only in logs
-#         response = requests.get(EMBEDDINGS_URL)
-#         response.raise_for_status()
-#         os.makedirs(os.path.dirname(LOCAL_PATH), exist_ok=True)
-#         with open(LOCAL_PATH, "wb") as f:
-#             f.write(response.content)
-#     return np.load(LOCAL_PATH, allow_pickle=True)
 
 @st.cache_resource
 def load_embeddings():

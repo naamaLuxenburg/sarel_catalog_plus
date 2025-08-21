@@ -27,7 +27,7 @@ nltk.download("punkt_tab")
 from nltk.tokenize import word_tokenize
 
 # print(f"✅ constants.py imported successfully {final_desc}")
-# from database.db_AI_utils import *
+from database.db_AI_utils import get_table_AI
 # import database.db_AI_utils as db_utils
 # importlib.reload(db_utils)
 
@@ -422,7 +422,7 @@ def combine_final_filter_results(df_input_filtered:pd.DataFrame, df_filtered_res
     df_final_result = pd.concat([df_filtered_result, df_input_missing], ignore_index=True)
     print(f"Total Serial ids in the final combime results: {df_final_result[col_input_id].nunique()}")
 
-    df_final_result.sort_values(by=col_input_id, inplace=True, ignore_index=True)
+    df_final_result.sort_values(by=[col_input_id, col_input_result_final_score], inplace=True, ignore_index=True)
 
     return df_final_result
 
