@@ -301,28 +301,6 @@ def apply_match_descriptions(col_input_desc:str, df_input_filtered: pd.DataFrame
             else:
                 comb_faiss_generic =round( 0.8 * float(score_generic) + 0.2 * float(score),3)  # combine generic match with token overlap    
         
-            #df results columns
-            # results.append({
-            #     col_input_id: input_id_row,
-            #     'input_description': input_desc_row,
-            #     # 'input_result': df_input_filtered.iloc[i]['Sarel Catalog Number'],
-            #     # 'Sarel Division': df_input_filtered.iloc[i]['Sarel Division'],
-            #     # 'desc_input_result': df_input_filtered.iloc[i][product_desc],
-            #     # 'desc_input_generic': df_input_filtered.iloc[i][med_generic],
-            #     'input_tokens': list(input_tokens),
-            #     'matched_description': db_desc,
-            #     'matched_tokens': list(db_tokens), 
-            #     'db_MATNR': df_db.iloc[idx][product_id_MARA],
-            #     'db_SPART': df_db.iloc[idx][product_dv_id],
-            #     'db_generic': db_generic,
-            #     'faiss_score': faiss_score,
-            #     'token_overlap': score_token,
-            #     'combination_score': round(comb_score,3),
-            #     'generic_score': score_generic,
-            #     'combination_generic_score': comb_generic,
-            #     'final_score':max(faiss_score, comb_score, comb_generic),  # choose the best score
-            #     'rank': rank+1
-            # })
             results.append({
                 col_input_id: input_id_row,
                 col_input_desc: input_desc_row,
@@ -342,29 +320,158 @@ def apply_match_descriptions(col_input_desc:str, df_input_filtered: pd.DataFrame
             })
 
     df_results = pd.DataFrame(results)
-    df_results = df_results.sort_values([col_input_id, 'final_score'], ascending=[True, False])
+    df_results = df_results.sort_values([col_input_id, col_input_result_final_score], ascending=[True, False])
     print(f"Done applying match descriptions with {len(df_results)} results.")
 
     return df_results
 
+
+def filter_top_th_result(df, score_col=col_input_result_final_score, group_col=col_input_id, min_count=5, threshold=0.85) -> pd.DataFrame:
+    """
+    Filters matches per group based on score thresholds and top_k logic.
+    
+    Parameters:
+    - df: DataFrame containing the matches.
+    - score_col: column name for the score.
+    - group_col: column name for grouping (e.g., product id).
+    - min_count: minimum number of matches to apply threshold logic.
+    - threshold: score threshold to keep all matches if enough are above it.
+    
+    Returns:
+    - Filtered DataFrame.
+    """
+    def filter_group(group):
+        group_data = group.copy()
+        if len(group_data) > min_count:
+            high_matches = group_data[group_data[score_col] >= threshold]
+            # Ensure at least min_count rows are returned
+            if len(high_matches) >= min_count:
+                return high_matches
+            else:
+                return group_data.nlargest(min_count, score_col, keep='all')
+        else:
+            return group_data
+
+    return df.groupby(group_col).apply(filter_group).reset_index(drop=True)
+
+
+def filter_results(df_results:pd.DataFrame, col_input_desc, th_min:int=0.7, min_count:int=5, th_mid:int=0.85, th_high:int=0.92)-> pd.DataFrame:
+    """
+     Filters and refines product matching results based on score thresholds and match counts.
+
+    Steps performed:
+    1. Keep only results with score >= th_min.
+    2. Count the number of matches per input_id.
+    3. Apply first filter: keep matches above th_mid, up to min_count per input_id.
+    4. Apply second filter: keep matches above th_high, up to min_count per input_id.
+    5. Update the number of matches per input_id after filtering.
+    6. Validate that no input_id was lost during filtering (warn if mismatch).
+    7. Return results sorted by input_id.
+
+    Args:
+        df_results (pd.DataFrame): DataFrame containing the initial matching results. 
+                                   Must include columns: 
+                                   - col_input_id, col_input_desc, 
+                                     col_input_result_product, col_input_result_product_dv, 
+                                     col_input_result_match_desc, col_input_result_final_score
+        col_input_desc (str): Column name representing the input description text.
+        th_min (float, default=0.7): Minimum score threshold to keep a match in the first stage.
+        min_count (int, default=5): Minimum number of matches to keep per input_id at each stage.
+        th_mid (float, default=0.85): Intermediate score threshold for the first filtering stage.
+        th_high (float, default=0.92): Higher score threshold for the second filtering stage.
+
+    Returns:
+        pd.DataFrame: Filtered DataFrame containing only valid matches after both filtering steps.
+        
+    """
+    
+    cols_filtered_result = [col_input_id, col_input_desc, col_input_result_product, col_input_result_product_dv, col_input_result_match_desc, col_input_result_final_score]
+    df_filtered_result=df_results[df_results[col_input_result_final_score]>=th_min].copy()[cols_filtered_result]
+    ls_input_ids_first = df_filtered_result[col_input_id].unique().tolist()
+
+    # Step 1: count matches per product
+    match_counts = df_filtered_result.groupby(col_input_id)[col_input_result_final_score].transform('count')
+    df_filtered_result[col_input_result_num] = match_counts
+
+    # Step 2: first filter (threshold 0.85, top 10)
+    df_filtered_result = filter_top_th_result(df_filtered_result, min_count=min_count, threshold=th_mid)
+
+    # Step 3: second filter (higher threshold 0.92, top 10)
+    df_filtered_result = filter_top_th_result(df_filtered_result, min_count=min_count, threshold=th_high)
+
+    # Step 4: update count matches per product
+    match_counts = df_filtered_result.groupby(col_input_id)[col_input_result_final_score].transform('count')
+    df_filtered_result[col_input_result_num] = match_counts
+
+    ls_input_ids_last = df_filtered_result[col_input_id].unique().tolist()
+    if ls_input_ids_last!=ls_input_ids_first:
+        print('There is a problem with the filter results.')
+
+    df_filtered_result.sort_values(by=col_input_id, inplace=True, ignore_index=True)
+    return df_filtered_result
+
+
+def combine_final_filter_results(df_input_filtered:pd.DataFrame, df_filtered_result:pd.DataFrame, col_input_desc:str)-> pd.DataFrame:
+
+    ls_input_ids = df_filtered_result[col_input_id].unique().tolist()
+    cols_filtered = [col_input_id, col_input_desc] #add later the col_input_manu part
+    df_input_missing= df_input_filtered[~df_input_filtered[col_input_id].isin(ls_input_ids)][cols_filtered]
+    print(f"Total Serial ids missing in results: {len(df_input_missing)}")
+    df_input_missing[col_input_result_num]=0
+
+    df_final_result = pd.concat([df_filtered_result, df_input_missing], ignore_index=True)
+    print(f"Total Serial ids in the final combime results: {df_final_result[col_input_id].nunique()}")
+
+    df_final_result.sort_values(by=col_input_id, inplace=True, ignore_index=True)
+
+    return df_final_result
+
+
 def create_match_product(df_input:pd.DataFrame, db_embeddings:np.ndarray, col_input_desc:str, col_input_manu:str = None) -> pd.DataFrame:
+    """
+    Creates product matches between an input dataset and a reference product database
+    using embeddings and similarity search.
+
+    Workflow:
+    1. Load product database and embeddings.
+    2. Preprocess the input data, filter invalid rows, and create embeddings.
+    3. Perform similarity search between input embeddings and product embeddings.
+    4. Filter results by multiple thresholds (via `filter_match_result`).
+    5. Return the filtered matches.
+
+    Args:
+        df_input (pd.DataFrame): Input dataset containing descriptions (and optionally manufacturers).
+        db_embeddings (np.ndarray): Pre-computed embeddings of the product database.
+        col_input_desc (str): Column name containing the input description text.
+        col_input_manu (str, optional): Column name containing manufacturer information. Default = None.
+
+    Returns:
+        pd.DataFrame: Filtered matching results, with candidate products and scores.
+    """
     #step 1 -  read the products data and load embeddings
+    print("Step 1: Loading product DB and embeddings...")
     df_products, df_db_org=read_prodcuts_data()
     df_db, db_embeddings=load_embeddings_sort_DB(df_db_org.copy(), db_embeddings)
-
+    print(f"Step 1 completed. Product DB has {len(df_db)} records.")
 
     #step 2 - input data: read the input, filter it and embed it
+    print("Step 2: Preparing input data and encoding embeddings...")
     print(f'The input data has {len(df_input)} records.')
-    print(f'The input desc column is: {col_input_desc}, and the input manu column is: {col_input_manu}')
+    print(f"Using description column: {col_input_desc}, manufacturer column: {col_input_manu}")
     df_input_filtered=filtered_input_data(df_input, col_input_desc)
     input_texts, input_embeddings = encode_embeddings_input(df_input_filtered)
-
-    
-    #step 3 - find the match description from the input to the products database
-    df_results=apply_match_descriptions(col_input_desc, df_input_filtered, df_db, input_embeddings, input_texts, db_embeddings, top_k=50)
+    print(f"Step 2 completed. Filtered input size: {len(df_input_filtered)}, embeddings created: {input_embeddings.shape}")
 
 
-    return df_results
+    #step 3 - find the match description from the input to the products database and filtered the results.
+    print("Step 3: Performing similarity search and filtering results...")
+    df_results=apply_match_descriptions(col_input_desc, df_input_filtered, df_db, input_embeddings, input_texts, db_embeddings, top_k=150)
+    df_results_filtered=filter_results(df_results, col_input_desc)
+    df_results_combine=combine_final_filter_results(df_input_filtered, df_results_filtered,col_input_desc)
+    print(f"Step 3 completed. Filtered results contain {len(df_results_filtered)} records.")
+
+    print("✅ Matching process completed successfully.")
+    return df_results_combine
 
 
 
